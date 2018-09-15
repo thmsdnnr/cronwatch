@@ -1,62 +1,75 @@
 const functions = require('firebase-functions')
 const admin = require('firebase-admin')
 const url = require('url')
+const moment = require('moment')
+const parser = require('cron-parser')
 
 admin.initializeApp(functions.config().firestore)
 admin.firestore().settings({
   timestampsInSnapshots: true
 })
 
-exports.stop = functions.https.onRequest((req, res) => {
-  const getRefForJob = jobId => {
-    // TODO: refactor to "getRefForLastJob"
-    return new Promise((resolve, reject) => {
-      if (!jobId.length) {
-        return reject(new Error('Please provide a valid job name.'))
-      }
-      admin
-        .firestore()
-        .collection('runs')
-        .where('job', '==', jobId)
-        .orderBy('start', 'desc')
-        .limit(1)
-        .get()
-        .then(querySnapshot => {
-          if (!querySnapshot || querySnapshot.empty) {
-            return reject(new Error('Could not find this run!'))
-          }
-          const doc = querySnapshot.docs[0]
-          if (doc.data().end !== null) {
-            return reject(new Error('Already have an end time for this run!'))
-          }
-          return resolve(doc.ref)
+const getPreviousJob = (jobId, numJobsAgo) => {
+  return new Promise((resolve, reject) => {
+    if (!jobId.length || !numJobsAgo || !Number.isInteger(numJobsAgo)) {
+      return reject(
+        new Error('Provide a valid job name and integral i-th job to retrieve.')
+      )
+    }
+    admin
+      .firestore()
+      .collection('runs')
+      .where('job', '==', jobId)
+      .orderBy('start', 'desc')
+      .limit(numJobsAgo)
+      .get()
+      .then(querySnapshot => {
+        const gameOver =
+          !querySnapshot ||
+          querySnapshot.empty ||
+          querySnapshot.docs.length < numJobsAgo
+        return gameOver === true
+          ? reject(new Error('Could not find this run!'))
+          : resolve(querySnapshot.docs[numJobsAgo - 1])
+      })
+      .catch(err => reject(new Error(err)))
+  })
+}
+
+const endJobDidFail = (job, failed = false) => {
+  return new Promise((resolve, reject) => {
+    admin.firestore().runTransaction(t => {
+      return t
+        .get(job.ref)
+        .then(doc => {
+          // TODO: rollback if doc is messed up
+          // right now we do nothing with it heh
+          const endTime = Date.now()
+          const startTime = doc.data().start
+          const duration = endTime - startTime
+          t.update(job.ref, {
+            duration: duration,
+            end: Date.now(),
+            error: failed,
+            wasConfirmed: false
+          })
+          return resolve('Job updated successfully.')
         })
         .catch(err => reject(new Error(err)))
     })
-  }
+  })
+}
 
-  const updateJobEndTime = jobRef => {
-    return new Promise((resolve, reject) => {
-      admin.firestore().runTransaction(t => {
-        return t
-          .get(jobRef)
-          .then(doc => {
-            const endTime = Date.now()
-            const startTime = doc.data().start
-            const duration = endTime - startTime
-            t.update(jobRef, {
-              duration: duration,
-              end: Date.now()
-            })
-            return resolve('Job updated successfully.')
-          })
-          .catch(err => reject(new Error(err)))
-      })
-    })
-  }
+exports.error = functions.https.onRequest((req, res) => {
+  getPreviousJob(req.query.job, 1)
+    .then(job => endJobDidFail(job, true))
+    .then(yay => res.send(200, yay))
+    .catch(err => res.send(500, `Error: ${err.message}`))
+})
 
-  getRefForJob(req.query.job)
-    .then(jobRef => updateJobEndTime(jobRef))
+exports.stop = functions.https.onRequest((req, res) => {
+  getPreviousJob(req.query.job, 1)
+    .then(job => endJobDidFail(job, false))
     .then(yay => res.send(200, yay))
     .catch(err => res.send(500, `Error: ${err.message}`))
 })
@@ -68,23 +81,12 @@ exports.go = functions.https.onRequest((req, res) => {
   }
   // We want to ensure that if there is a previous run for this job
   // that it has an end time. If not, we don't want to start.
-  admin
-    .firestore()
-    .collection('runs')
-    .where('job', '==', jobId)
-    .orderBy('start', 'desc')
-    .limit(1)
-    .get()
-    .then(querySnapshot => {
-      if (querySnapshot && !querySnapshot.empty) { //TODO: refactor into promise
-        // Make sure we haven't already ended this job.
-        const doc = querySnapshot.docs[0]
-        if (doc.data().end === null) {
-          return res.send(500, "start before we ended this job????")
-          // return reject(new Error('Already have an end time for this run!'))
-        }
+  getPreviousJob(req.query.job, 1)
+    .then(job => {
+      const doc = job.data()
+      if (doc.data().end === null) {
+        return res.send(500, 'start before we ended this job????')
       }
-      // Empty snapshot is fine, assume it's the first run.
       return admin
         .firestore()
         .collection('runs')
@@ -95,5 +97,6 @@ exports.go = functions.https.onRequest((req, res) => {
         })
         .then(snapshot => res.send(200))
         .catch(err => res.send(500, JSON.stringify(err)))
-    }).catch(err => res.send(500, JSON.stringify(err)))
+    })
+    .catch(err => res.send(500, JSON.stringify(err)))
 })

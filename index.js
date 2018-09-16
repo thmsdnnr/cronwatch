@@ -9,6 +9,19 @@ admin.firestore().settings({
   timestampsInSnapshots: true
 })
 
+const COLLECTIONS = Object.freeze({
+  JOBS: 'jobs',
+  RUNS: 'runs'
+})
+
+const COMPARATOR = Object.freeze({
+  LT: '<',
+  LTE: '<=',
+  EQ: '==',
+  GT: '>',
+  GTE: '>='
+})
+
 const getPreviousJob = (jobId, numJobsAgo) => {
   return new Promise((resolve, reject) => {
     if (!jobId.length || !numJobsAgo || !Number.isInteger(numJobsAgo)) {
@@ -18,8 +31,8 @@ const getPreviousJob = (jobId, numJobsAgo) => {
     }
     admin
       .firestore()
-      .collection('runs')
-      .where('job', '==', jobId)
+      .collection(COLLECTIONS.RUNS)
+      .where('job', COMPARATOR.EQ, jobId)
       .orderBy('start', 'desc')
       .limit(numJobsAgo)
       .get()
@@ -60,6 +73,51 @@ const endJobDidFail = (job, failed = false) => {
   })
 }
 
+const getCronSignature = jobId => {
+  return new Promise((resolve, reject) => {
+    admin
+      .firestore()
+      .collection(COLLECTIONS.JOBS)
+      .where('id', COMPARATOR.EQ, jobId)
+      .get()
+      .then(querySnapshot => {
+        const gameOver = !querySnapshot || querySnapshot.empty
+        return gameOver === true
+          ? reject(new Error('Could not find this run!'))
+          : resolve(querySnapshot.docs[0].data().cronSig)
+      })
+      .catch(err => reject(new Error(err)))
+  })
+}
+
+const validatePreviousRunForJob = job => {
+  return new Promise((resolve, reject) => {
+    const jobId = job.data().job
+    getCronSignature(jobId)
+      .then(signature => {
+        const parsedCron = parser.parseExpression(signature)
+        const prevRunShouldBe = parsedCron.prev()._date.utc()
+        const jobStartDate = moment(job.start)
+        const isError = prevRunShouldBe.isSame(jobStartDate, 'day') !== true
+        return admin.firestore().runTransaction(t => {
+          return t
+            .get(job.ref)
+            .then(doc => {
+              // TODO: rollback if doc is messed up
+              // right now we do nothing with it heh
+              t.update(job.ref, {
+                error: isError,
+                wasConfirmed: true
+              })
+              return resolve('Job updated successfully.')
+            })
+            .catch(err => reject(new Error(err)))
+        })
+      })
+      .catch(err => reject(new Error(err)))
+  })
+}
+
 exports.error = functions.https.onRequest((req, res) => {
   getPreviousJob(req.query.job, 1)
     .then(job => endJobDidFail(job, true))
@@ -68,8 +126,14 @@ exports.error = functions.https.onRequest((req, res) => {
 })
 
 exports.stop = functions.https.onRequest((req, res) => {
-  getPreviousJob(req.query.job, 1)
-    .then(job => endJobDidFail(job, false))
+  // When I stop a job, validate it started on time
+  let endJob = getPreviousJob(req.query.job, 1).then(job =>
+    endJobDidFail(job, false)
+  )
+  let validateLast = getPreviousJob(req.query.job, 1).then(job =>
+    validatePreviousRunForJob(job)
+  )
+  Promise.all([endJob, validateLast])
     .then(yay => res.send(200, yay))
     .catch(err => res.send(500, `Error: ${err.message}`))
 })
@@ -89,7 +153,7 @@ exports.go = functions.https.onRequest((req, res) => {
       }
       return admin
         .firestore()
-        .collection('runs')
+        .collection(COLLECTIONS.RUNS)
         .add({
           job: jobId,
           start: Date.now(),

@@ -118,6 +118,27 @@ const validatePreviousRunForJob = job => {
   })
 }
 
+const validateTimeForJob = (time, job) => {
+  // TODO: allow custom thresholds (ms before ms after)
+  const t = moment(time).utc()
+  // TODO: get job expression and parse here
+  const initial = parser.parseExpression('*/2 * * * *')
+  const A = initial.next()
+  const B = initial.prev()
+  const step = A._date.diff(B._date, 'milliseconds')
+  t.add(step + 500, 'milliseconds')
+  const iterati = parser.parseExpression('*/2 * * * *', {
+    currentDate: t.valueOf()
+  })
+  const getPrev = () => iterati.prev()._date.utc()
+  let nextBack = getPrev()
+  // No more than 30 seconds early, no more than 59 seconds late
+  const maxTimeBefore = nextBack.clone().subtract(30, 'seconds')
+  const maxTimeAfter = nextBack.clone().add(59, 'seconds')
+  const withinWindow = t.isBetween(maxTimeBefore, maxTimeAfter) === true
+  // TODO: set flags and alert accordingly
+}
+
 exports.error = functions.https.onRequest((req, res) => {
   getPreviousJob(req.query.job, 1)
     .then(job => endJobDidFail(job, true))

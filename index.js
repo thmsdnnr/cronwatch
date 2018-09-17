@@ -18,6 +18,7 @@ const COMPARATOR = Object.freeze({
   LT: '<',
   LTE: '<=',
   EQ: '==',
+  NEQ: '!=',
   GT: '>',
   GTE: '>='
 })
@@ -29,7 +30,7 @@ const getPreviousJob = (jobId, numJobsAgo) => {
         new Error('Provide a valid job name and integral i-th job to retrieve.')
       )
     }
-    admin
+    return admin
       .firestore()
       .collection(COLLECTIONS.RUNS)
       .where('job', COMPARATOR.EQ, jobId)
@@ -37,13 +38,13 @@ const getPreviousJob = (jobId, numJobsAgo) => {
       .limit(numJobsAgo)
       .get()
       .then(querySnapshot => {
-        const gameOver =
-          !querySnapshot ||
-          querySnapshot.empty ||
-          querySnapshot.docs.length < numJobsAgo
-        return gameOver === true
-          ? reject(new Error('Could not find this run!'))
-          : resolve(querySnapshot.docs[numJobsAgo - 1])
+        const allGood =
+          querySnapshot &&
+          !querySnapshot.empty &&
+          querySnapshot.docs.length >= numJobsAgo
+        return allGood === true
+          ? resolve(querySnapshot.docs[numJobsAgo - 1])
+          : resolve
       })
       .catch(err => reject(new Error(err)))
   })
@@ -63,8 +64,7 @@ const endJobDidFail = (job, failed = false) => {
           t.update(job.ref, {
             duration: duration,
             end: Date.now(),
-            error: failed,
-            wasConfirmed: false
+            error: failed
           })
           return resolve('Job updated successfully.')
         })
@@ -73,7 +73,7 @@ const endJobDidFail = (job, failed = false) => {
   })
 }
 
-const getCronSignature = jobId => {
+const getCronSignature = async jobId => {
   return new Promise((resolve, reject) => {
     admin
       .firestore()
@@ -107,7 +107,8 @@ const validatePreviousRunForJob = job => {
               // right now we do nothing with it heh
               t.update(job.ref, {
                 error: isError,
-                wasConfirmed: true
+                wasStartValidated: true,
+                isValidStart: isValid
               })
               return resolve('Job updated successfully.')
             })
@@ -118,25 +119,78 @@ const validatePreviousRunForJob = job => {
   })
 }
 
-const validateTimeForJob = (time, job) => {
+const getRunsRequiringStartValidation = async () => {
+  return new Promise((resolve, reject) => {
+    admin
+      .firestore()
+      .collection(COLLECTIONS.RUNS)
+      .where('wasStartValidated', COMPARATOR.EQ, false)
+      .get()
+      .then(querySnapshot => {
+        return !querySnapshot
+          ? reject(new Error('Start time query failed to run.'))
+          : resolve(querySnapshot.docs)
+      })
+      .catch(err => reject(new Error(err)))
+  })
+}
+
+const updateRun = (run, newDataObj) => {
+  console.info(
+    `Updating ${run.data().job} with start ${run.data().start}. Valid? ${newDataObj.isValidStart}`
+  )
+  return new Promise((resolve, reject) => {
+    return admin.firestore().runTransaction(t => {
+      return t
+        .get(run.ref)
+        .then(doc => {
+          // TODO: rollback if doc is messed up
+          // right now we do nothing with it heh
+          t.update(run.ref, newDataObj)
+          return resolve('Job updated successfully.')
+        })
+        .catch(err => reject(new Error(err)))
+    })
+  })
+}
+
+const validateRunStarts = async () => {
+  const runList = await getRunsRequiringStartValidation()
+  const result = await Promise.all(
+    runList.map(async run => {
+      // TODO: memoize the cron signatures or store on the
+      // run so we don't have to make a ton of requests here
+      const jobId = run.data().job
+      const cronSignature = await getCronSignature(jobId)
+      const isValid = validateStartTimeForRun(run, cronSignature)
+      await updateRun(run, {
+        isValidStart: isValid,
+        wasStartValidated: true
+      })
+    })
+  )
+}
+
+const validateStartTimeForRun = (run, cronSignature) => {
   // TODO: allow custom thresholds (ms before ms after)
-  const t = moment(time).utc()
-  // TODO: get job expression and parse here
-  const initial = parser.parseExpression('*/2 * * * *')
+  const thisRunData = run.data()
+  const runStart = moment.utc(thisRunData.start)
+  const initial = parser.parseExpression(cronSignature)
   const A = initial.next()
   const B = initial.prev()
   const step = A._date.diff(B._date, 'milliseconds')
-  t.add(step + 500, 'milliseconds')
-  const iterati = parser.parseExpression('*/2 * * * *', {
-    currentDate: t.valueOf()
+  runStart.add(step + 500, 'milliseconds')
+  const iterati = parser.parseExpression(cronSignature, {
+    currentDate: runStart.valueOf()
   })
   const getPrev = () => iterati.prev()._date.utc()
   let nextBack = getPrev()
   // No more than 30 seconds early, no more than 59 seconds late
-  const maxTimeBefore = nextBack.clone().subtract(30, 'seconds')
-  const maxTimeAfter = nextBack.clone().add(59, 'seconds')
-  const withinWindow = t.isBetween(maxTimeBefore, maxTimeAfter) === true
-  // TODO: set flags and alert accordingly
+  const maxTimeBefore = nextBack.clone().utc(true)
+  const maxTimeAfter = nextBack.clone().utc(true)
+  maxTimeBefore.subtract(30, 'seconds')
+  maxTimeAfter.add(59, 'seconds')
+  return runStart.isBetween(maxTimeBefore, maxTimeAfter) === true
 }
 
 exports.error = functions.https.onRequest((req, res) => {
@@ -147,16 +201,13 @@ exports.error = functions.https.onRequest((req, res) => {
 })
 
 exports.stop = functions.https.onRequest((req, res) => {
-  // When I stop a job, validate it started on time
-  let endJob = getPreviousJob(req.query.job, 1).then(job =>
-    endJobDidFail(job, false)
-  )
-  let validateLast = getPreviousJob(req.query.job, 1).then(job =>
-    validatePreviousRunForJob(job)
-  )
-  Promise.all([endJob, validateLast])
+  getPreviousJob(req.query.job, 1)
+    .then(job => endJobDidFail(job, false))
     .then(yay => res.send(200, yay))
     .catch(err => res.send(500, `Error: ${err.message}`))
+  // TODO: insert a trigger to only validate
+  // previous jobs if we haven't tried in the last N minutes
+  validateRunStarts()
 })
 
 exports.go = functions.https.onRequest((req, res) => {
@@ -164,24 +215,16 @@ exports.go = functions.https.onRequest((req, res) => {
   if (!jobId || !jobId.length) {
     return res.send(500, 'Please provide a valid job name.')
   }
-  // We want to ensure that if there is a previous run for this job
-  // that it has an end time. If not, we don't want to start.
-  getPreviousJob(req.query.job, 1)
-    .then(job => {
-      const doc = job.data()
-      if (doc.data().end === null) {
-        return res.send(500, 'start before we ended this job????')
-      }
-      return admin
-        .firestore()
-        .collection(COLLECTIONS.RUNS)
-        .add({
-          job: jobId,
-          start: Date.now(),
-          end: null
-        })
-        .then(snapshot => res.send(200))
-        .catch(err => res.send(500, JSON.stringify(err)))
+  return admin
+    .firestore()
+    .collection(COLLECTIONS.RUNS)
+    .add({
+      job: jobId,
+      start: Date.now(),
+      end: null,
+      wasStartValidated: false,
+      isValidStart: null
     })
+    .then(snapshot => res.send(200))
     .catch(err => res.send(500, JSON.stringify(err)))
 })

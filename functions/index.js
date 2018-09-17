@@ -24,6 +24,7 @@ const COMPARATOR = Object.freeze({
 })
 
 const getPreviousJob = (jobId, numJobsAgo) => {
+  // gets the job entry numJobsAgo for job with jobId
   return new Promise((resolve, reject) => {
     if (!jobId.length || !numJobsAgo || !Number.isInteger(numJobsAgo)) {
       return reject(
@@ -81,39 +82,16 @@ const getCronSignature = async jobId => {
       .where('id', COMPARATOR.EQ, jobId)
       .get()
       .then(querySnapshot => {
-        const gameOver = !querySnapshot || querySnapshot.empty
-        return gameOver === true
-          ? reject(new Error('Could not find this run!'))
+        return !querySnapshot || !querySnapshot.docs[0]
+          ? reject(
+              new Error(
+                `No job named ${jobId} exists in the jobs collection in the database.
+                Perhaps you just created it?
+                Cannot validate runs for this job until the job name and cron signature are added.
+                Data for the run will still be recorded.`
+              )
+            )
           : resolve(querySnapshot.docs[0].data().cronSig)
-      })
-      .catch(err => reject(new Error(err)))
-  })
-}
-
-const validatePreviousRunForJob = job => {
-  return new Promise((resolve, reject) => {
-    const jobId = job.data().job
-    getCronSignature(jobId)
-      .then(signature => {
-        const parsedCron = parser.parseExpression(signature)
-        const prevRunShouldBe = parsedCron.prev()._date.utc()
-        const jobStartDate = moment(job.start)
-        const isError = prevRunShouldBe.isSame(jobStartDate, 'day') !== true
-        return admin.firestore().runTransaction(t => {
-          return t
-            .get(job.ref)
-            .then(doc => {
-              // TODO: rollback if doc is messed up
-              // right now we do nothing with it heh
-              t.update(job.ref, {
-                error: isError,
-                wasStartValidated: true,
-                isValidStart: isValid
-              })
-              return resolve('Job updated successfully.')
-            })
-            .catch(err => reject(new Error(err)))
-        })
       })
       .catch(err => reject(new Error(err)))
   })
@@ -161,12 +139,16 @@ const validateRunStarts = async () => {
       // TODO: memoize the cron signatures or store on the
       // run so we don't have to make a ton of requests here
       const jobId = run.data().job
-      const cronSignature = await getCronSignature(jobId)
-      const isValid = validateStartTimeForRun(run, cronSignature)
-      await updateRun(run, {
-        isValidStart: isValid,
-        wasStartValidated: true
-      })
+      try {
+        const cronSignature = await getCronSignature(jobId)
+        const isValid = validateStartTimeForRun(run, cronSignature)
+        await updateRun(run, {
+          isValidStart: isValid,
+          wasStartValidated: true
+        })
+      } catch (e) {
+        console.error(e)
+      }
     })
   )
 }
@@ -196,15 +178,15 @@ const validateStartTimeForRun = (run, cronSignature) => {
 exports.error = functions.https.onRequest((req, res) => {
   getPreviousJob(req.query.job, 1)
     .then(job => endJobDidFail(job, true))
-    .then(yay => res.send(200, yay))
-    .catch(err => res.send(500, `Error: ${err.message}`))
+    .then(yay => res.status(200).send(yay))
+    .catch(err => res.status(500).send(`Error: ${err.message}`))
 })
 
 exports.stop = functions.https.onRequest((req, res) => {
   getPreviousJob(req.query.job, 1)
     .then(job => endJobDidFail(job, false))
-    .then(yay => res.send(200, yay))
-    .catch(err => res.send(500, `Error: ${err.message}`))
+    .then(yay => res.status(200).send(yay))
+    .catch(err => res.status(200).send(`Error: ${err.message}`))
   // TODO: insert a trigger to only validate
   // previous jobs if we haven't tried in the last N minutes
   validateRunStarts()
@@ -213,7 +195,7 @@ exports.stop = functions.https.onRequest((req, res) => {
 exports.go = functions.https.onRequest((req, res) => {
   const jobId = req.query.job
   if (!jobId || !jobId.length) {
-    return res.send(500, 'Please provide a valid job name.')
+    return res.status(500).send('Please provide a valid job name.')
   }
   return admin
     .firestore()
@@ -226,5 +208,5 @@ exports.go = functions.https.onRequest((req, res) => {
       isValidStart: null
     })
     .then(snapshot => res.send(200))
-    .catch(err => res.send(500, JSON.stringify(err)))
+    .catch(err => res.status(500).send(JSON.stringify(err)))
 })

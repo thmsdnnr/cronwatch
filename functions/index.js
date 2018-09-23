@@ -59,6 +59,10 @@ const endJobDidFail = (job, failed = false) => {
         .then(doc => {
           // TODO: rollback if doc is messed up
           // right now we do nothing with it heh
+          const alreadyEnded = doc.data().endTime !== null
+          if (alreadyEnded) {
+            return reject('That job already ended!')
+          }
           const endTime = Date.now()
           const startTime = doc.data().start
           const duration = endTime - startTime
@@ -161,7 +165,7 @@ const validateStartTimeForRun = (run, cronSignature) => {
   const A = initial.next()
   const B = initial.prev()
   const step = A._date.diff(B._date, 'milliseconds')
-  runStart.add(step + 500, 'milliseconds')
+  runStart.add(step - 30, 'seconds')
   const iterati = parser.parseExpression(cronSignature, {
     currentDate: runStart.valueOf()
   })

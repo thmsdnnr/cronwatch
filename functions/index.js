@@ -51,14 +51,16 @@ const getPreviousJob = (jobId, numJobsAgo) => {
   })
 }
 
-const endJobDidFail = (job, failed = false) => {
+const endRun = runData => {
+  const runRef = admin.firestore().collection(RUNS).doc()
   return new Promise((resolve, reject) => {
     admin.firestore().runTransaction(t => {
       return t
-        .get(job.ref)
-        .then(doc => {
-          // TODO: rollback if doc is messed up
-          // right now we do nothing with it heh
+        .get(runRef)
+        .then(runDoc => {
+          /* TODO: rollback if doc is messed up
+             right now we do nothing with it heh
+          */
           const alreadyEnded = doc.data().endTime !== null
           if (alreadyEnded) {
             return reject('That job already ended!')
@@ -66,10 +68,13 @@ const endJobDidFail = (job, failed = false) => {
           const endTime = Date.now()
           const startTime = doc.data().start
           const duration = endTime - startTime
-          t.update(job.ref, {
+          t.update(runRef, {
             duration: duration,
-            end: Date.now(),
-            error: failed
+            end: endTime,
+            reportedEnd: runData.reportedEnd,
+            stdOut: runData.stdOut,
+            stdErr: runData.stdErr,
+            isValid: runData.isValid
           })
           return resolve('Job updated successfully.')
         })
@@ -187,29 +192,62 @@ exports.error = functions.https.onRequest((req, res) => {
 })
 
 exports.stop = functions.https.onRequest((req, res) => {
-  getPreviousJob(req.query.job, 1)
-    .then(job => endJobDidFail(job, false))
+  const { runId, validRun, reportedEnd, stdOut, stdErr } = req.body
+  const failInvalid = msg =>
+    res.status(500).send(`Please provide a valid ${msg}`)
+
+  if (!runId || !runId.length) {
+    return failInvalid('runId')
+  } else if (validRun === null) {
+    return failInvalid('validRun')
+  } else if (!reportedEnd) {
+    return failInvalid('reportedEnd')
+  } else if (!stdOut) {
+    return failInvalid('stdOut')
+  } else if (!stdErr) {
+    return failInvalid('stdErr')
+  }
+
+  const runData = {
+    runId: runId,
+    validRun: validRun,
+    reportedEnd: reportedEnd,
+    stdOut: stdOut,
+    stdErr: stdErr
+  }
+  endRun(runData)
     .then(yay => res.status(200).send(yay))
     .catch(err => res.status(200).send(`Error: ${err.message}`))
-  // TODO: insert a trigger to only validate
-  // previous jobs if we haven't tried in the last N minutes
-  validateRunStarts()
+  /* TODO: insert a trigger to only validate
+  previous jobs if we haven't tried in the last N minutes
+  */
+  // validateRunStarts()
 })
 
 exports.go = functions.https.onRequest((req, res) => {
-  const jobId = req.query.job
-  if (!jobId || !jobId.length) {
-    return res.status(500).send('Please provide a valid job name.')
+  const { runId, jobId, reportedStart } = req.body
+  const failInvalid = msg =>
+    res.status(500).send(`Please provide a valid ${msg}`)
+
+  if (!runId || !runId.length) {
+    return failInvalid('runId')
+  } else if (!jobId || !jobId.length) {
+    return failInvalid('jobId')
+  } else if (!reportedStart) {
+    return failInvalid('reportedStart')
   }
+
   return admin
     .firestore()
     .collection(COLLECTIONS.RUNS)
     .add({
-      job: jobId,
+      id: runId,
+      jobId: jobId,
       start: Date.now(),
       end: null,
-      wasStartValidated: false,
-      isValidStart: null
+      reportedStart: reportedStart,
+      reportedEnd: null,
+      validRun: null
     })
     .then(snapshot => res.send(200))
     .catch(err => res.status(500).send(JSON.stringify(err)))

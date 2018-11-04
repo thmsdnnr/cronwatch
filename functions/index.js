@@ -267,6 +267,28 @@ const validateTimesForJobs = (timeSlots, runList) => {
   }
 }
 
+const getJobData = async () => {
+  const jobList = await getJobsList()
+  const runPromises = jobList.map(async job => {
+    let runList = await getRunsForJob(job.jobId, job.validatedUntilTimestamp)
+    runList = runList.map(run => {
+      let runData = run.data()
+      return {
+        runId: run.id,
+        start: runData.start,
+        end: runData.end
+      }
+    })
+    return {
+      jobId: job.jobId,
+      cronSig: job.cronSig,
+      runList: runList
+    }
+  })
+  const jobData = await Promise.all(runPromises)
+  return jobData
+}
+
 /*
   For each unvalidated run, check it and mark it as checked
   For each invalid or missing, create alert
@@ -277,66 +299,40 @@ exports.validate = functions.https.onRequest((req, res) => {
   const lastValidatedTime = admin.firestore.Timestamp.fromDate(
     moment().subtract(5, 'minutes').toDate()
   )
-  const jobs = getJobsList()
-    .then(jobList => {
-      // Get the jobs
-      const runPromises = jobList.map(async job => {
-        let runList = await getRunsForJob(
-          job.jobId,
-          job.validatedUntilTimestamp
-        )
-        runList = runList.map(run => {
-          let runData = run.data()
+  getJobData()
+    .then(jobData => {
+      let validationResults = jobData
+        .filter(jobData => jobData.runList.length > 0)
+        .map(job => {
+          let firstRun = job.runList[0]
+          let jobTimeSlots = generateTimeSlots(firstRun, job.cronSig)
           return {
-            runId: run.id,
-            start: runData.start,
-            end: runData.end
+            job: job.jobId,
+            results: validateTimesForJobs(jobTimeSlots, job.runList)
           }
         })
-        return {
-          jobId: job.jobId,
-          cronSig: job.cronSig,
-          runList: runList
-        }
-      })
-      return Promise.all(runPromises)
-        .then(jobData => {
-          let validationResults = jobData
-            .filter(jobData => jobData.runList.length > 0)
-            .map(job => {
-              let firstRun = job.runList[0]
-              let jobTimeSlots = generateTimeSlots(firstRun, job.cronSig)
-              return {
-                job: job.jobId,
-                results: validateTimesForJobs(jobTimeSlots, job.runList)
-              }
-            })
-          return validationResults.forEach(jobValidationResult => {
-            const { job, results } = jobValidationResult
-            const { orphanTimeSlots, runsWithValidity } = results
-            let runUpdates = runsWithValidity.map(run => {
-              return updateRun(run.run.runId, {
-                validRun: run.isValid
-              })
-            })
-            console.log(job)
-            console.log(lastValidatedTime)
-            // return Promise.all(runUpdates).then(() => {
-            //   return res.status(200).send(JSON.stringify(validationResults))
-            // })
-            // orphanTimeSlots.forEach(orphan => {
-            //   createAlert(orphan)
-            // })
-            // const validatedUntil = runsWithValidity.slice(-1)[0].run.start
-            // console.log(validatedUntil)
-            // let time = new Date(validatedUntil._seconds)
-            // console.log(time)
-            updateJob(job, {
-              validatedUntilTimestamp: lastValidatedTime
-            })
+      return validationResults.forEach(jobValidationResult => {
+        const { job, results } = jobValidationResult
+        const { orphanTimeSlots, runsWithValidity } = results
+        let runUpdates = runsWithValidity.map(run => {
+          return updateRun(run.run.runId, {
+            validRun: run.isValid
           })
         })
-        .catch(err => res.status(500).send(JSON.stringify(err)))
+        // return Promise.all(runUpdates).then(() => {
+        //   return res.status(200).send(JSON.stringify(validationResults))
+        // })
+        // orphanTimeSlots.forEach(orphan => {
+        //   createAlert(orphan)
+        // })
+        // const validatedUntil = runsWithValidity.slice(-1)[0].run.start
+        // console.log(validatedUntil)
+        // let time = new Date(validatedUntil._seconds)
+        // console.log(time)
+        updateJob(job, {
+          validatedUntilTimestamp: lastValidatedTime
+        })
+      })
     })
     .catch(err => res.status(500).send(JSON.stringify(err)))
 })

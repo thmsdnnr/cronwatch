@@ -289,6 +289,17 @@ const getJobData = async () => {
   return jobData
 }
 
+const getValidationResults = jobData => {
+  return jobData.filter(jobData => jobData.runList.length > 0).map(job => {
+    let firstRun = job.runList[0]
+    let jobTimeSlots = generateTimeSlots(firstRun, job.cronSig)
+    return {
+      job: job.jobId,
+      results: validateTimesForJobs(jobTimeSlots, job.runList)
+    }
+  })
+}
+
 /*
   For each unvalidated run, check it and mark it as checked
   For each invalid or missing, create alert
@@ -300,17 +311,8 @@ exports.validate = functions.https.onRequest((req, res) => {
     moment().subtract(5, 'minutes').toDate()
   )
   getJobData()
-    .then(jobData => {
-      let validationResults = jobData
-        .filter(jobData => jobData.runList.length > 0)
-        .map(job => {
-          let firstRun = job.runList[0]
-          let jobTimeSlots = generateTimeSlots(firstRun, job.cronSig)
-          return {
-            job: job.jobId,
-            results: validateTimesForJobs(jobTimeSlots, job.runList)
-          }
-        })
+    .then(jobData => getValidationResults(jobData))
+    .then(validationResults => {
       return validationResults.forEach(jobValidationResult => {
         const { job, results } = jobValidationResult
         const { orphanTimeSlots, runsWithValidity } = results

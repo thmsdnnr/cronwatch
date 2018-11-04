@@ -29,6 +29,7 @@ const ALERT_TYPES = Object.freeze({
   INVALID_RUN: 'INVALID_RUN'
 })
 
+// TODO: endRun just wraps an updateRun call with end-specific data.
 const endRun = runData => {
   const runRef = admin
     .firestore()
@@ -65,8 +66,11 @@ const endRun = runData => {
   })
 }
 
-const updateRun = (runId, newDataObj) => {
+const updateRun = async (runId, newDataObj) => {
   console.log('Updating run', runId)
+  if (newDataObj.validRun === false) {
+    await createAlert(runId)
+  }
   const runRef = admin.firestore().collection(COLLECTIONS.RUNS).doc(runId)
   return new Promise((resolve, reject) => {
     admin.firestore().runTransaction(t => {
@@ -103,11 +107,12 @@ const updateJob = (jobId, newDataObj) => {
 }
 
 const createAlert = async (alertType, alertInfo, jobId) => {
+  // TODO: implement object creation in alerts collection
+
   // Generates an alert of @alertType with @alertInfo and optional @jobId
   // const alertId = Math.round(Date.now() / 1000)
   // admin.firestore().collection(COLLECTIONS.RUNS).doc(runId).set({})
   console.log(`Oh noes! ${JSON.stringify(alertType)}`)
-  // TODO: implement
   return true
 }
 
@@ -169,11 +174,11 @@ const generateTimeSlots = (
   const iteratorNext = () => iterator.next()._date
   let time = iteratorNext()
   let res = []
-  do {
+  while (time < stopPoint) {
     // TODO: make sure this won't explode
     res.push({ time: time, isTaken: false })
     time = iteratorNext()
-  } while (time < stopPoint)
+  }
   return res
 }
 
@@ -183,7 +188,7 @@ const validateTimesForJobs = (timeSlots, runList) => {
   runs with statuses (valid / invalid)
   times to generate alerts for (missing runs)
   {
-    runs: [{runId: "iDofTheRun", isValid: True/false }]
+    runs: [{runId: "iDofTheRun", validRun: True/false }]
     times: [times, that, are, missing, runs]
   }
 
@@ -224,7 +229,7 @@ const validateTimesForJobs = (timeSlots, runList) => {
     })
   )
   const latestTimeToConsider = moment().subtract(5, 'minutes')
-  let runsWithValidity = [] // array of {runId: the_run_id, isValid: true/false}
+  let runsWithValidity = [] // array of {runId: the_run_id, validRun: true/false}
   for (var i = 0; i < runList.length; i++) {
     let matchFound = false
     let run = runList[i]
@@ -249,14 +254,14 @@ const validateTimesForJobs = (timeSlots, runList) => {
         matchFound = true
         runsWithValidity.push({
           run: runList[i],
-          isValid: true
+          validRun: true
         })
       }
     }
     if (matchFound === false) {
       runsWithValidity.push({
         run: runList[i],
-        isValid: false
+        validRun: false
       })
     }
   }
@@ -300,43 +305,48 @@ const getValidationResults = jobData => {
   })
 }
 
-/*
-  For each unvalidated run, check it and mark it as checked
-  For each invalid or missing, create alert
-  When done with job, update job validatedUntilTimestamp to the most recent
-  run that was checked
-*/
-exports.validate = functions.https.onRequest((req, res) => {
+const processValidationResults = async validationResults => {
+  console.log(validationResults)
+  // Updates runs and jobs, generates alerts for failures
+  let promisesToAwait = []
   const lastValidatedTime = admin.firestore.Timestamp.fromDate(
     moment().subtract(5, 'minutes').toDate()
   )
-  getJobData()
-    .then(jobData => getValidationResults(jobData))
-    .then(validationResults => {
-      return validationResults.forEach(jobValidationResult => {
-        const { job, results } = jobValidationResult
-        const { orphanTimeSlots, runsWithValidity } = results
-        let runUpdates = runsWithValidity.map(run => {
-          return updateRun(run.run.runId, {
-            validRun: run.isValid
-          })
+  validationResults.forEach(jobValidationResult => {
+    const { job, results } = jobValidationResult
+    const { orphanTimeSlots, runsWithValidity } = results
+    promisesToAwait.push(
+      ...runsWithValidity.map(run =>
+        updateRun(run.run.runId, {
+          validRun: run.validRun
         })
-        // return Promise.all(runUpdates).then(() => {
-        //   return res.status(200).send(JSON.stringify(validationResults))
-        // })
-        // orphanTimeSlots.forEach(orphan => {
-        //   createAlert(orphan)
-        // })
-        // const validatedUntil = runsWithValidity.slice(-1)[0].run.start
-        // console.log(validatedUntil)
-        // let time = new Date(validatedUntil._seconds)
-        // console.log(time)
+      )
+    )
+    /* If we didn't look at any runs for this job,
+    don't update validatedUntil. */
+    if (orphanTimeSlots.length !== 0 || runsWithValidity.length !== 0) {
+      promisesToAwait.push(
         updateJob(job, {
           validatedUntilTimestamp: lastValidatedTime
         })
-      })
-    })
-    .catch(err => res.status(500).send(JSON.stringify(err)))
+      )
+    }
+    promisesToAwait.push(...orphanTimeSlots.map(orphan => createAlert(orphan)))
+  })
+  try {
+    await Promise.all(promisesToAwait)
+    return `Processed ${promisesToAwait.length} updates successfully.`
+  } catch (error) {
+    throw Error(error)
+  }
+}
+
+exports.validate = functions.https.onRequest((req, res) => {
+  getJobData()
+    .then(jobData => getValidationResults(jobData))
+    .then(validationResults => processValidationResults(validationResults))
+    .then(yay => res.status(200).send(yay))
+    .catch(err => res.status(500).send(err))
 })
 
 exports.stop = functions.https.onRequest((req, res) => {
@@ -392,5 +402,5 @@ exports.go = functions.https.onRequest((req, res) => {
       validRun: null
     })
     .then(snapshot => res.sendStatus(200))
-    .catch(err => res.status(500).send(JSON.stringify(err)))
+    .catch(err => res.status(500).send(err))
 })

@@ -26,38 +26,41 @@ const COMPARATOR = Object.freeze({
 
 const ALERT_TYPES = Object.freeze({
   MISSING_RUN: 'MISSING_RUN',
-  INVALID_RUN: 'INVALID_RUN'
+  INVALID_RUN: 'INVALID_RUN',
+  ERRORS_IN_RUN: 'ERRORS_IN_RUN'
 })
 
 // TODO: endRun just wraps an updateRun call with end-specific data.
-const endRun = runData => {
+const endRun = async runData => {
   const runRef = admin
     .firestore()
     .collection(COLLECTIONS.RUNS)
     .doc(runData.runId)
+  if (runData.stdErr !== false) {
+    await createAlert(ALERT_TYPES.ERRORS_IN_RUN, {
+      // TODO: might want to pass or otherwise grab job ID here from client-side
+      runId: runData.runId
+    })
+  }
   return new Promise((resolve, reject) => {
     admin.firestore().runTransaction(t => {
       return t
         .get(runRef)
         .then(doc => {
-          /* TODO: rollback if doc is messed up
-             right now we do nothing with it heh
-          */
           if (doc.data().end !== null) {
             return reject(new Error('That job already ended!'))
           }
           const now = new Date()
           const startTime = doc.data().start.toDate()
           const duration = (now - startTime) / 1000 // Time difference in seconds
-          // TODO: if stdErr not empty -- run is invalid, so send an alert.
-          // TODO: difference between
-          // const isInvalid = Boolean(runData.validRun) === true;
+          const validRun = runData.stdErr === true ? false : null
           t.update(runRef, {
             durationSeconds: duration,
             end: now,
             reportedEnd: new Date(runData.reportedEnd * 1000),
             stdOut: runData.stdOut,
-            stdErr: runData.stdErr
+            stdErr: runData.stdErr,
+            validRun: validRun
           })
           return resolve('Job updated successfully.')
         })
@@ -69,7 +72,10 @@ const endRun = runData => {
 const updateRun = async (runId, newDataObj) => {
   console.log('Updating run', runId)
   if (newDataObj.validRun === false) {
-    await createAlert(runId)
+    await createAlert(ALERT_TYPES.INVALID_RUN, {
+      runId: runId,
+      text: 'Please fix this invalid run!'
+    })
   }
   const runRef = admin.firestore().collection(COLLECTIONS.RUNS).doc(runId)
   return new Promise((resolve, reject) => {
@@ -106,15 +112,42 @@ const updateJob = (jobId, newDataObj) => {
   })
 }
 
-const createAlert = async (alertType, alertInfo, jobId) => {
-  // TODO: implement object creation in alerts collection
+/* Alerts */
 
-  // Generates an alert of @alertType with @alertInfo and optional @jobId
-  // const alertId = Math.round(Date.now() / 1000)
-  // admin.firestore().collection(COLLECTIONS.RUNS).doc(runId).set({})
-  console.log(`Oh noes! ${JSON.stringify(alertType)}`)
-  return true
+// Firebase trigger on creation of each new alert
+// Used to dispatch messages to users who are subscribed to
+// alerts for the given jobId in the organization.
+exports.createAlert = functions.firestore
+  .document('alerts/{alertId}')
+  .onCreate((snap, context) => {
+    // Can access alert information with snap.data()
+    const data = snap.data()
+    console.log('TODO: Send this message to people who care.')
+    console.log('Alert!', JSON.stringify(data))
+    snap.ref.update({
+      subscribedMembersAlerted: true
+    })
+  })
+
+const createAlert = async (alertType, alertData) => {
+  // Generates an alert of @alertType with @alertData
+  if (alertType === null) {
+    console.error('You should not create an alert without an alertType!')
+  }
+  const { jobId, runId, text } = alertData
+  const alertId = `alert_${Math.round(Date.now() / 1000)}_${jobId}`
+  return admin.firestore().collection(COLLECTIONS.ALERTS).doc(alertId).set({
+    alertType: alertType,
+    text: text || null,
+    jobId: jobId || null,
+    runId: runId || null,
+    createdAt: new Date(),
+    resolvedAt: null,
+    resolvedByMember: null,
+    subscribedMembersAlerted: false
+  })
 }
+/* END Alerts */
 
 const getJobsList = async () => {
   const jobsRef = admin.firestore().collection(COLLECTIONS.JOBS)
@@ -265,7 +298,10 @@ const validateTimesForJobs = (timeSlots, runList) => {
       })
     }
   }
-  let orphanTimeSlots = timeSlots.filter(slot => slot.isTaken === false)
+  // Create flat list of time slots that are not taken yet and remove the isTaken flag
+  let orphanTimeSlots = timeSlots
+    .filter(slot => slot.isTaken === false)
+    .map(slot => slot.time)
   return {
     orphanTimeSlots: orphanTimeSlots,
     runsWithValidity: runsWithValidity
@@ -331,7 +367,14 @@ const processValidationResults = async validationResults => {
         })
       )
     }
-    promisesToAwait.push(...orphanTimeSlots.map(orphan => createAlert(orphan)))
+    promisesToAwait.push(
+      ...orphanTimeSlots.map(orphan =>
+        createAlert(ALERT_TYPES.MISSING_RUN, {
+          jobId: job,
+          text: orphan.toDate()
+        })
+      )
+    )
   })
   try {
     await Promise.all(promisesToAwait)
@@ -373,7 +416,7 @@ exports.stop = functions.https.onRequest((req, res) => {
   // TODO: catch this error clientside and mailgun us or sumthin
   return endRun(runData)
     .then(yay => res.status(200).send(yay))
-    .catch(err => res.status(200).send(`Error: ${err.message}`))
+    .catch(err => res.status(500).send(`Error: ${err.message}`))
 })
 
 exports.go = functions.https.onRequest((req, res) => {

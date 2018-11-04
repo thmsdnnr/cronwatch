@@ -71,27 +71,25 @@ const endRun = async runData => {
 
 const updateRun = async (runId, newDataObj) => {
   console.log('Updating run', runId)
-  if (newDataObj.validRun === false) {
-    await createAlert(ALERT_TYPES.INVALID_RUN, {
-      runId: runId,
-      text: 'Please fix this invalid run!'
-    })
-  }
   const runRef = admin.firestore().collection(COLLECTIONS.RUNS).doc(runId)
-  return new Promise((resolve, reject) => {
-    admin.firestore().runTransaction(t => {
-      return t
-        .get(runRef)
-        .then(doc => {
-          console.info(`Updating ${runId}. Valid? ${newDataObj.validRun}`)
-          // TODO: rollback if doc is messed up
-          // right now we do nothing with it heh
-          t.update(runRef, newDataObj)
-          return resolve('Job updated successfully.')
+  try {
+    await admin.firestore().runTransaction(async t => {
+      const ref = await t.get(runRef)
+      t.update(runRef, newDataObj)
+      console.log('the data', ref.data())
+      const jobId = ref.data().jobId
+      if (newDataObj.validRun === false) {
+        await createAlert(ALERT_TYPES.INVALID_RUN, {
+          runId: runId,
+          jobId: jobId,
+          text: 'Please fix this invalid run!'
         })
-        .catch(err => reject(new Error(err)))
+      }
     })
-  })
+    return 'Success'
+  } catch (error) {
+    throw Error(error)
+  }
 }
 
 const updateJob = (jobId, newDataObj) => {
@@ -194,7 +192,6 @@ const generateTimeSlots = (
   generate the expected time slots between that run and @stopPoint, default
   5 mintues ago */
   const runStart = moment.unix(run.start._seconds)
-  const runEnd = moment.unix(run.end._seconds)
   let iteratorStart = runStart.clone().subtract(59, 'seconds')
   let iterator = parser.parseExpression(cronSignature, {
     currentDate: iteratorStart.valueOf()

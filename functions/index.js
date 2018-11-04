@@ -85,15 +85,13 @@ const updateRun = (runId, newDataObj) => {
 }
 
 const updateJob = (jobId, newDataObj) => {
-  const jobRef = admin.firestore().collection(COLLECTIONS.JOBS).doc(jobID)
+  console.log('Updating job', jobId)
+  const jobRef = admin.firestore().collection(COLLECTIONS.JOBS).doc(jobId)
   return new Promise((resolve, reject) => {
     return admin.firestore().runTransaction(t => {
       return t
         .get(jobRef)
         .then(doc => {
-          console.info(
-            `Updating ${jobId}. validatedUntilTimestamp ${newDataObj.validatedUntilTimestamp.toDate()}`
-          )
           // TODO: rollback if doc is messed up
           // right now we do nothing with it heh
           t.update(jobRef, newDataObj)
@@ -121,12 +119,13 @@ const getJobsList = async () => {
     return {
       jobId: jobDoc.id,
       cronSig: data.cronSig,
-      validatedUpToTimestamp: data.validatedUpToTimestamp || null
+      validatedUntilTimestamp: data.validatedUntilTimestamp || null
     }
   })
 }
 
 const getRunsForJob = async (jobId, optionalStartTimestamp = null) => {
+  console.log(`Getting runs for ${jobId} ${optionalStartTimestamp}`)
   /* Retrieve all runs for @jobId that occurred after @optionalStartTimestamp
   If no @optionalStartTimestamp is specified, retrieves all runs for job. */
   return new Promise((resolve, reject) => {
@@ -271,10 +270,13 @@ const validateTimesForJobs = (timeSlots, runList) => {
 /*
   For each unvalidated run, check it and mark it as checked
   For each invalid or missing, create alert
-  When done with job, update job validatedUpToTimestamp to the most recent
+  When done with job, update job validatedUntilTimestamp to the most recent
   run that was checked
 */
 exports.validate = functions.https.onRequest((req, res) => {
+  const lastValidatedTime = admin.firestore.Timestamp.fromDate(
+    moment().subtract(5, 'minutes').toDate()
+  )
   const jobs = getJobsList()
     .then(jobList => {
       // Get the jobs
@@ -299,61 +301,26 @@ exports.validate = functions.https.onRequest((req, res) => {
       })
       return Promise.all(runPromises)
         .then(jobData => {
-          /*
-          Each object in runList looks like this:
-          jobId: "auto_freegeo"
-          runList: list of runs
-            each run:
-            {
-              runId: the id
-              start: the start firebase timestamp
-              end: the end firebase timestamp
-            }
-        */
-          let validationResults = jobData.map(job => {
-            let firstRun = job.runList[0]
-            let jobTimeSlots = generateTimeSlots(firstRun, job.cronSig)
-            return {
-              job: job.jobId,
-              results: validateTimesForJobs(jobTimeSlots, job.runList)
-            }
-          })
-          /*
-          validationResults looks like:
-            [
-              {
-                job: "auto_freegeo",
-                results:
-                  orphanTimeSlots: [array, of, moments, missing jobs]
-                  runsWithValidity: [
-                    {
-                      isValid: true/false
-                      run: {
-                        runId:
-                          start: {
-                            _seconds:
-                            _nanoseconds:
-                          }
-                          end: {
-                            _seconds:
-                            _nanoseconds:
-                          }
-                      }
-                    }
-                  ]
-                  ]
+          let validationResults = jobData
+            .filter(jobData => jobData.runList.length > 0)
+            .map(job => {
+              let firstRun = job.runList[0]
+              let jobTimeSlots = generateTimeSlots(firstRun, job.cronSig)
+              return {
+                job: job.jobId,
+                results: validateTimesForJobs(jobTimeSlots, job.runList)
               }
-            ]
-        */
+            })
           return validationResults.forEach(jobValidationResult => {
             const { job, results } = jobValidationResult
             const { orphanTimeSlots, runsWithValidity } = results
-            console.log(runsWithValidity)
             let runUpdates = runsWithValidity.map(run => {
               return updateRun(run.run.runId, {
                 validRun: run.isValid
               })
             })
+            console.log(job)
+            console.log(lastValidatedTime)
             // return Promise.all(runUpdates).then(() => {
             //   return res.status(200).send(JSON.stringify(validationResults))
             // })
@@ -364,9 +331,9 @@ exports.validate = functions.https.onRequest((req, res) => {
             // console.log(validatedUntil)
             // let time = new Date(validatedUntil._seconds)
             // console.log(time)
-            // updateJob(job, {
-            //   validatedUntilTimestamp: time
-            // })
+            updateJob(job, {
+              validatedUntilTimestamp: lastValidatedTime
+            })
           })
         })
         .catch(err => res.status(500).send(JSON.stringify(err)))

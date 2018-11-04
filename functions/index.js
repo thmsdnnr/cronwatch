@@ -38,8 +38,8 @@ const endRun = async runData => {
     .doc(runData.runId)
   if (runData.stdErr !== false) {
     await createAlert(ALERT_TYPES.ERRORS_IN_RUN, {
-      // TODO: might want to pass or otherwise grab job ID here from client-side
-      runId: runData.runId
+      runId: runData.runId,
+      jobId: runData.jobId
     })
   }
   return new Promise((resolve, reject) => {
@@ -385,7 +385,11 @@ const processValidationResults = async validationResults => {
 }
 
 exports.validate = functions.https.onRequest((req, res) => {
-  getJobData()
+  const { APIKEY } = req.body
+  if (APIKEY !== process.env.SECRET) {
+    return res.sendStatus(401)
+  }
+  return getJobData()
     .then(jobData => getValidationResults(jobData))
     .then(validationResults => processValidationResults(validationResults))
     .then(yay => res.status(200).send(yay))
@@ -393,12 +397,17 @@ exports.validate = functions.https.onRequest((req, res) => {
 })
 
 exports.stop = functions.https.onRequest((req, res) => {
-  const { runId, reportedEnd, stdOut, stdErr } = req.body
+  const { runId, jobId, reportedEnd, stdOut, stdErr, APIKEY } = req.body
+  if (APIKEY !== process.env.SECRET) {
+    return res.sendStatus(401)
+  }
   const failInvalid = msg =>
     res.status(500).send(`Please provide a valid ${msg}`)
 
   if (!runId || !runId.length) {
     return failInvalid('runId')
+  } else if (!jobId || !jobId.length) {
+    return failInvalid('jobId')
   } else if (!reportedEnd) {
     return failInvalid('reportedEnd')
   } else if (stdOut === null) {
@@ -408,6 +417,7 @@ exports.stop = functions.https.onRequest((req, res) => {
   }
 
   const runData = {
+    jobId: jobId,
     runId: runId,
     reportedEnd: reportedEnd,
     stdOut: stdOut !== 'False',
@@ -420,7 +430,10 @@ exports.stop = functions.https.onRequest((req, res) => {
 })
 
 exports.go = functions.https.onRequest((req, res) => {
-  const { runId, jobId, reportedStart } = req.body
+  const { runId, jobId, reportedStart, APIKEY } = req.body
+  if (APIKEY !== process.env.SECRET) {
+    return res.sendStatus(401)
+  }
   const failInvalid = msg =>
     res.status(500).send(`Please provide a valid ${msg}`)
 

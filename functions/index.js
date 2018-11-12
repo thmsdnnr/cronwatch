@@ -76,7 +76,6 @@ const updateRun = async (runId, newDataObj) => {
     await admin.firestore().runTransaction(async t => {
       const ref = await t.get(runRef)
       t.update(runRef, newDataObj)
-      console.log('the data', ref.data())
       const jobId = ref.data().jobId
       if (newDataObj.validRun === false) {
         await createAlert(ALERT_TYPES.INVALID_RUN, {
@@ -122,7 +121,7 @@ exports.createAlert = functions.firestore
     const data = snap.data()
     console.log('TODO: Send this message to people who care.')
     console.log('Alert!', JSON.stringify(data))
-    snap.ref.update({
+    return snap.ref.update({
       subscribedMembersAlerted: true
     })
   })
@@ -161,7 +160,7 @@ const getJobsList = async () => {
 }
 
 const getRunsForJob = async (jobId, optionalStartTimestamp = null) => {
-  console.log(`Getting runs for ${jobId} ${optionalStartTimestamp}`)
+  console.log(`Getting runs for ${jobId} ${optionalStartTimestamp._seconds}`)
   /* Retrieve all runs for @jobId that occurred after @optionalStartTimestamp
   If no @optionalStartTimestamp is specified, retrieves all runs for job. */
   return new Promise((resolve, reject) => {
@@ -186,7 +185,7 @@ const getRunsForJob = async (jobId, optionalStartTimestamp = null) => {
 const generateTimeSlots = (
   run,
   cronSignature,
-  stopPoint = moment().subtract(5, 'minutes')
+  stopPoint
 ) => {
   /* Given a @firstRun time in the list and a @cronSignature,
   generate the expected time slots between that run and @stopPoint, default
@@ -196,11 +195,6 @@ const generateTimeSlots = (
   let iterator = parser.parseExpression(cronSignature, {
     currentDate: iteratorStart.valueOf()
   })
-  const resetIterator = currentTime => {
-    iterator = parser.parseExpression(cronSignature, {
-      currentDate: currentTime.clone().valueOf()
-    })
-  }
   const iteratorNext = () => iterator.next()._date
   let time = iteratorNext()
   let res = []
@@ -212,7 +206,7 @@ const generateTimeSlots = (
   return res
 }
 
-const validateTimesForJobs = (timeSlots, runList) => {
+const validateTimesForJobs = (timeSlots, runList, stopPoint) => {
   /*
   Returns an object containing an object with arrays of two things:
   runs with statuses (valid / invalid)
@@ -258,20 +252,26 @@ const validateTimesForJobs = (timeSlots, runList) => {
       expectedTime: moment.unix(run.start._seconds)
     })
   )
-  const latestTimeToConsider = moment().subtract(5, 'minutes')
+  /* TODO: clarify? kind of tricky windowing here
+  stopPoint is the time up to which we generate
+  a list of *possible* run times. Since runs can be up to 59
+  seconds late and not be "missing", we have to include all
+  runs up to 59 seconds late (so stopPoint + 59 seconds)
+  */
+  let latestTimeToConsider = stopPoint.add(59, 'seconds')
   let runsWithValidity = [] // array of {runId: the_run_id, validRun: true/false}
   for (var i = 0; i < runList.length; i++) {
     let matchFound = false
     let run = runList[i]
-    let time = moment.unix(run.start._seconds)
-    if (time >= latestTimeToConsider) {
+    let thisRunTime = moment.unix(run.start._seconds)
+    if (thisRunTime >= latestTimeToConsider) {
+      console.log(`Skipping run at ${thisRunTime}`)
       // TODO: fix kludge -- SKIP!
       // TODO: should also skip jobs with endTime === null?
       continue
     }
-    let possibleTimes = timeSlots.filter(e => !e.isTaken)
-    const maxTimeBefore = time.clone()
-    const maxTimeAfter = time.clone()
+    const maxTimeBefore = thisRunTime.clone()
+    const maxTimeAfter = thisRunTime.clone()
     // TODO: right now +/- 59 seconds (so roughly a ~ 2.99 minute window)
     maxTimeBefore.subtract(59, 'seconds')
     maxTimeAfter.add(59, 'seconds')
@@ -309,6 +309,7 @@ const getJobData = async () => {
   const jobList = await getJobsList()
   const runPromises = jobList.map(async job => {
     let runList = await getRunsForJob(job.jobId, job.validatedUntilTimestamp)
+    // console.log(`Retrieved ${runList.length} runs for ${job.jobId}`)
     runList = runList.map(run => {
       let runData = run.data()
       return {
@@ -328,12 +329,18 @@ const getJobData = async () => {
 }
 
 const getValidationResults = jobData => {
+  /* Must set stopPoint here to avoid race conditions between
+    generateTimeSlots and validateTimesForJobs
+    (particularly if the validation is happening every 5 minutes
+    and jobs are also happening every 5 minutes)
+  */
+  const stopPoint = moment().subtract(5, 'minutes');
   return jobData.filter(jobData => jobData.runList.length > 0).map(job => {
     let firstRun = job.runList[0]
-    let jobTimeSlots = generateTimeSlots(firstRun, job.cronSig)
+    let jobTimeSlots = generateTimeSlots(firstRun, job.cronSig, stopPoint)
     return {
       job: job.jobId,
-      results: validateTimesForJobs(jobTimeSlots, job.runList)
+      results: validateTimesForJobs(jobTimeSlots, job.runList, stopPoint)
     }
   })
 }

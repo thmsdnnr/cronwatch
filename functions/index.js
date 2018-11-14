@@ -1,23 +1,23 @@
-const functions = require('firebase-functions');
-const admin = require('firebase-admin');
+const functions = require('firebase-functions')
+const admin = require('firebase-admin')
 // const url = require('url')
-const moment = require('moment');
-const parser = require('cron-parser');
+const moment = require('moment')
+const parser = require('cron-parser')
 
 // Must call before using firebase services
-admin.initializeApp(functions.config().firestore);
+admin.initializeApp(functions.config().firestore)
 // Database handle
-const DB = admin.firestore();
+const DB = admin.firestore()
 
 DB.settings({
-  timestampsInSnapshots: true,
-});
+  timestampsInSnapshots: true
+})
 
 const COLLECTIONS = Object.freeze({
   JOBS: 'jobs',
   RUNS: 'runs',
-  ALERTS: 'alerts',
-});
+  ALERTS: 'alerts'
+})
 
 const COMPARATOR = Object.freeze({
   LT: '<',
@@ -25,83 +25,83 @@ const COMPARATOR = Object.freeze({
   EQ: '==',
   NEQ: '!=',
   GT: '>',
-  GTE: '>=',
-});
+  GTE: '>='
+})
 
 const ALERT_TYPES = Object.freeze({
   MISSING_RUN: 'MISSING_RUN',
   INVALID_RUN: 'INVALID_RUN',
-  ERRORS_IN_RUN: 'ERRORS_IN_RUN',
-});
+  ERRORS_IN_RUN: 'ERRORS_IN_RUN'
+})
 
 const endRun = async runData => {
   try {
     if (runData.stdErr !== false) {
       await createAlert(ALERT_TYPES.ERRORS_IN_RUN, {
         runId: runData.runId,
-        jobId: runData.jobId,
-      });
+        jobId: runData.jobId
+      })
     }
-    const runRef = DB.collection(COLLECTIONS.RUNS).doc(runData.runId);
+    const runRef = DB.collection(COLLECTIONS.RUNS).doc(runData.runId)
     await DB.runTransaction(async t => {
-      const doc = await t.get(runRef);
+      const doc = await t.get(runRef)
       if (doc.data().end !== null) {
-        throw new Error('That job already ended!');
+        throw new Error('That job already ended!')
       }
-      const now = new Date();
-      const startTime = doc.data().start.toDate();
-      const duration = (now - startTime) / 1000; // Time difference in seconds
-      const validRun = runData.stdErr === true ? false : null;
+      const now = new Date()
+      const startTime = doc.data().start.toDate()
+      const duration = (now - startTime) / 1000 // Time difference in seconds
+      const validRun = runData.stdErr === true ? false : null
       await t.update(runRef, {
         durationSeconds: duration,
         end: now,
         reportedEnd: new Date(runData.reportedEnd * 1000),
         stdOut: runData.stdOut,
         stdErr: runData.stdErr,
-        validRun: validRun,
-      });
-    });
-    return true;
+        validRun: validRun
+      })
+    })
+    return true
   } catch (error) {
-    throw Error(error);
+    throw Error(error)
   }
-};
+}
 
 const updateRun = async (runId, newDataObj) => {
-  console.log('Updating run', runId);
-  const runRef = DB.collection(COLLECTIONS.RUNS).doc(runId);
+  console.log('Updating run', runId)
+  const runRef = DB.collection(COLLECTIONS.RUNS).doc(runId)
   try {
     await DB.runTransaction(async t => {
-      const ref = await t.get(runRef);
-      t.update(runRef, newDataObj);
-      const jobId = ref.data().jobId;
+      const ref = await t.get(runRef)
+      t.update(runRef, newDataObj)
+      const jobId = ref.data().jobId
       if (newDataObj.validRun === false) {
         await createAlert(ALERT_TYPES.INVALID_RUN, {
           runId: runId,
           jobId: jobId,
-          text: 'Please fix this invalid run!',
-        });
+          text: 'Please fix this invalid run!'
+        })
       }
-    });
-    return 'Success';
+    })
+    return 'Success'
   } catch (error) {
-    throw Error(error);
+    throw Error(error)
   }
-};
+}
 
 const updateJob = async (jobId, newDataObj) => {
-  console.log('Updating job', jobId);
-  const jobRef = DB.collection(COLLECTIONS.JOBS).doc(jobId);
+  console.log('Updating job', jobId)
+  const jobRef = DB.collection(COLLECTIONS.JOBS).doc(jobId)
   try {
     await DB.runTransaction(async t => {
-      const ref = await t.get(jobRef);
-      t.update(jobRef, newDataObj);
-    });
-    return 'Success';
+      const ref = await t.get(jobRef)
+      t.update(jobRef, newDataObj)
+    })
+    return 'Success'
   } catch (error) {
-    throw Error(error);
+    throw Error(error)
   }
-};
+}
 
 /* Alerts */
 
@@ -112,22 +112,23 @@ exports.createAlert = functions.firestore
   .document('alerts/{alertId}')
   .onCreate((snap, context) => {
     // Can access alert information with snap.data()
-    const data = snap.data();
-    console.log('TODO: Send this message to people who care.');
-    console.log('Alert!', JSON.stringify(data));
+    const data = snap.data()
+    console.log('TODO: Send this message to people who care.')
+    console.log('Alert!', JSON.stringify(data))
     return snap.ref.update({
-      subscribedMembersAlerted: true,
-    });
-  });
+      subscribedMembersAlerted: true
+    })
+  })
 
 const createAlert = async (alertType, alertData) => {
   // Generates an alert of @alertType with @alertData
   if (alertType === null) {
-    console.error('You should not create an alert without an alertType!');
+    console.error('You should not create an alert without an alertType!')
   }
-  const { jobId, runId, text } = alertData;
-  const alertId = `alert_${Math.round(Date.now() / 1000)}_${jobId}`;
+  const { jobId, runId, text } = alertData
+  const alertId = `alert_${Math.round(Date.now() / 1000)}_${jobId}`
   try {
+<<<<<<< HEAD
     await DB.collection(COLLECTIONS.ALERTS)
       .doc(alertId)
       .set({
@@ -141,251 +142,252 @@ const createAlert = async (alertType, alertData) => {
         subscribedMembersAlerted: false,
       });
     return true;
+=======
+    await DB.collection(COLLECTIONS.ALERTS).doc(alertId).set({
+      alertType: alertType,
+      text: text || null,
+      jobId: jobId || null,
+      runId: runId || null,
+      createdAt: new Date(),
+      resolvedAt: null,
+      resolvedByMember: null,
+      subscribedMembersAlerted: false
+    })
+>>>>>>> 85e4c4f... implement maxEarly and maxLate times
   } catch (error) {
-    throw Error(error);
+    throw Error(error)
   }
-};
+}
 /* END Alerts */
 
 const getJobsList = async () => {
   try {
-    const jobs = await DB.collection(COLLECTIONS.JOBS).get();
+    const jobs = await DB.collection(COLLECTIONS.JOBS).get()
     return jobs.docs.map(jobDoc => {
-      let data = jobDoc.data();
+      let data = jobDoc.data()
       return {
+        jobData: data,
         jobId: jobDoc.id,
         cronSig: data.cronSig,
-        validatedUntilTimestamp: data.validatedUntilTimestamp || null,
-      };
-    });
+        validatedUntilTimestamp: data.validatedUntilTimestamp || null
+      }
+    })
   } catch (error) {
-    throw Error(error);
+    throw Error(error)
   }
-};
+}
 
 const getRunsForJob = async (jobId, optionalStartTimestamp = null) => {
-  console.log(`Getting runs for ${jobId} ${optionalStartTimestamp._seconds}`);
+  console.log(`Getting runs for ${jobId} ${optionalStartTimestamp._seconds}`)
   /* Retrieve all runs for @jobId that occurred after @optionalStartTimestamp
   If no @optionalStartTimestamp is specified, retrieves all runs for job. */
   let runsRef = DB.collection(COLLECTIONS.RUNS).where(
     'jobId',
     COMPARATOR.EQ,
     jobId
-  );
+  )
   if (optionalStartTimestamp !== null) {
-    runsRef = runsRef.where('start', COMPARATOR.GTE, optionalStartTimestamp);
+    runsRef = runsRef.where('start', COMPARATOR.GTE, optionalStartTimestamp)
   }
   try {
-    const runsForJob = await runsRef.get();
-    return runsForJob.docs;
+    const runsForJob = await runsRef.get()
+    return runsForJob.docs
   } catch (error) {
-    throw Error(error);
+    throw Error(error)
   }
-};
+}
 
-const generateTimeSlots = (run, cronSignature, stopPoint) => {
+const generateTimeSlots = (run, job, stopPoint) => {
   /* Given a @firstRun time in the list and a @cronSignature,
   generate the expected time slots between that run and @stopPoint, default
   5 mintues ago */
-  const runStart = moment.unix(run.start._seconds);
-  let iteratorStart = runStart.clone().subtract(59, 'seconds');
+  const jobDocument = job.jobData
+  const cronSignature = jobDocument.cronSig
+  const maxSecondsEarly = jobDocument.allowedSecondsEarly || 59
+  const maxSecondsLate = jobDocument.allowedSecondsLate || 59
+  const runStart = moment.unix(run.start._seconds)
+  let iteratorStart = runStart.clone().subtract(59, 'seconds')
   let iterator = parser.parseExpression(cronSignature, {
-    currentDate: iteratorStart.valueOf(),
-  });
-  const iteratorNext = () => iterator.next()._date;
-  let time = iteratorNext();
-  let res = [];
+    currentDate: iteratorStart.valueOf()
+  })
+  const iteratorNext = () => iterator.next()._date
+  let time = iteratorNext()
+  let res = []
   while (time < stopPoint) {
     // TODO: make sure this won't explode
-    res.push({ time: time, isTaken: false });
-    time = iteratorNext();
+    const earliestTime = time.clone().subtract(maxSecondsEarly, 'seconds')
+    const latestTime = time.clone().add(maxSecondsLate, 'seconds')
+    res.push({
+      time: time,
+      isTaken: false,
+      earliest: earliestTime,
+      latest: latestTime
+    })
+    time = iteratorNext()
   }
-  return res;
-};
+  return res
+}
 
-const validateTimesForJobs = (timeSlots, runList, stopPoint) => {
+const validateTimesForJob = (timeSlots, job, stopPoint) => {
   /*
   Returns an object containing an object with arrays of two things:
   runs with statuses (valid / invalid)
   times to generate alerts for (missing runs) */
-  let results = [];
-  let run = runList[0];
-  let times = runList.map(run =>
-    Object.assign({}, run, {
-      expectedTime: moment.unix(run.start._seconds),
-    })
-  );
-  /* TODO: clarify? kind of tricky windowing here
-  stopPoint is the time up to which we generate
-  a list of *possible* run times. Since runs can be up to 59
-  seconds late and not be "missing", we have to include all
-  runs up to 59 seconds late (so stopPoint + 59 seconds)
-  */
-  let latestTimeToConsider = stopPoint.add(59, 'seconds');
-  let runsWithValidity = []; // array of {runId: the_run_id, validRun: true/false}
+  const runList = job.runList
+  const jobDocument = job.jobData
+  const maxSecondsAllowedLate = jobDocument.allowedSecondsLate || 59
+  const latestTimeToConsider = stopPoint.add(maxSecondsAllowedLate, 'seconds')
+  let runsWithValidity = [] // array of {runId: the_run_id, validRun: true/false}
   for (var i = 0; i < runList.length; i++) {
-    let matchFound = false;
-    let run = runList[i];
-    let thisRunTime = moment.unix(run.start._seconds);
+    let matchFound = false
+    let run = runList[i]
+    let thisRunTime = moment.unix(run.start._seconds)
     if (thisRunTime >= latestTimeToConsider) {
-      console.log(`Skipping run at ${thisRunTime}`);
-      // TODO: fix kludge -- SKIP!
-      // TODO: should also skip jobs with endTime === null?
-      continue;
+      console.log(`Skipping run at ${thisRunTime}`)
+      continue
     }
-    const maxTimeBefore = thisRunTime.clone();
-    const maxTimeAfter = thisRunTime.clone();
-    // TODO: right now +/- 59 seconds (so roughly a ~ 2.99 minute window)
-    maxTimeBefore.subtract(59, 'seconds');
-    maxTimeAfter.add(59, 'seconds');
     for (var j = 0; j < timeSlots.length; j++) {
-      if (timeSlots[j].isTaken === true) {
-        continue;
+      const slot = timeSlots[j]
+      if (slot.isTaken) {
+        continue
       }
-      if (timeSlots[j].time.isBetween(maxTimeBefore, maxTimeAfter) === true) {
-        timeSlots[j].isTaken = true;
-        matchFound = true;
+      if (thisRunTime.isBetween(slot.earliest, slot.latest)) {
+        slot.isTaken = true
+        matchFound = true
         runsWithValidity.push({
           run: runList[i],
-          validRun: true,
-        });
+          validRun: true
+        })
       }
     }
     if (matchFound === false) {
       runsWithValidity.push({
         run: runList[i],
-        validRun: false,
-      });
+        validRun: false
+      })
     }
   }
   // Create flat list of time slots that are not taken yet and remove the isTaken flag
   let orphanTimeSlots = timeSlots
-    .filter(slot => slot.isTaken === false)
-    .map(slot => slot.time);
+    .filter(slot => !slot.isTaken)
+    .map(slot => slot.time)
   return {
     orphanTimeSlots: orphanTimeSlots,
-    runsWithValidity: runsWithValidity,
-  };
-};
+    runsWithValidity: runsWithValidity
+  }
+}
 
 const getJobData = async () => {
-  const jobList = await getJobsList();
+  const jobList = await getJobsList()
   const runPromises = jobList.map(async job => {
-    let runList = await getRunsForJob(job.jobId, job.validatedUntilTimestamp);
-    // console.log(`Retrieved ${runList.length} runs for ${job.jobId}`)
+    let runList = await getRunsForJob(job.jobId, job.validatedUntilTimestamp)
     runList = runList.map(run => {
-      let runData = run.data();
+      let runData = run.data()
       return {
         runId: run.id,
         start: runData.start,
-        end: runData.end,
-      };
-    });
+        end: runData.end
+      }
+    })
     return {
       jobId: job.jobId,
       cronSig: job.cronSig,
       runList: runList,
-    };
-  });
-  const jobData = await Promise.all(runPromises);
-  return jobData;
-};
+      jobData: job.jobData
+    }
+  })
+  const jobData = await Promise.all(runPromises)
+  return jobData
+}
 
 const getValidationResults = jobData => {
-  /* Must set stopPoint here to avoid race conditions between
-    generateTimeSlots and validateTimesForJobs
-    (particularly if the validation is happening every 5 minutes
-    and jobs are also happening every 5 minutes) */
-  const stopPoint = moment().subtract(5, 'minutes');
-  return jobData
-    .filter(jobData => jobData.runList.length > 0)
-    .map(job => {
-      let firstRun = job.runList[0];
-      let jobTimeSlots = generateTimeSlots(firstRun, job.cronSig, stopPoint);
-      return {
-        job: job.jobId,
-        results: validateTimesForJobs(jobTimeSlots, job.runList, stopPoint),
-      };
-    });
-};
+  // Will not consider any jobs past stopPoint on this validation run.
+  const stopPoint = moment().subtract(5, 'minutes')
+  return jobData.filter(jobData => jobData.runList.length > 0).map(job => {
+    let firstRun = job.runList[0]
+    let jobTimeSlots = generateTimeSlots(firstRun, job, stopPoint)
+    return {
+      job: job.jobId,
+      results: validateTimesForJob(jobTimeSlots, job, stopPoint)
+    }
+  })
+}
 
 const processValidationResults = async validationResults => {
   // Updates runs and jobs, generates alerts for failures
-  console.log(validationResults);
-  let promisesToAwait = [];
+  console.log(validationResults)
+  let promisesToAwait = []
   const lastValidatedTime = admin.firestore.Timestamp.fromDate(
-    moment()
-      .subtract(5, 'minutes')
-      .toDate()
-  );
+    moment().subtract(5, 'minutes').toDate()
+  )
   validationResults.forEach(jobValidationResult => {
-    const { job, results } = jobValidationResult;
-    const { orphanTimeSlots, runsWithValidity } = results;
+    const { job, results } = jobValidationResult
+    const { orphanTimeSlots, runsWithValidity } = results
     promisesToAwait.push(
       ...runsWithValidity.map(run =>
         updateRun(run.run.runId, {
-          validRun: run.validRun,
+          validRun: run.validRun
         })
       )
-    );
+    )
     /// If we didn't look at any runs for this job, don't update validatedUntilTimestamp
     if (orphanTimeSlots.length !== 0 || runsWithValidity.length !== 0) {
       promisesToAwait.push(
         updateJob(job, {
-          validatedUntilTimestamp: lastValidatedTime,
+          validatedUntilTimestamp: lastValidatedTime
         })
-      );
+      )
     }
     promisesToAwait.push(
       ...orphanTimeSlots.map(orphan =>
         createAlert(ALERT_TYPES.MISSING_RUN, {
           jobId: job,
-          text: orphan.toDate(),
+          text: orphan.toDate()
         })
       )
-    );
-  });
+    )
+  })
   try {
-    await Promise.all(promisesToAwait);
-    return `Processed ${promisesToAwait.length} updates successfully.`;
+    await Promise.all(promisesToAwait)
+    return `Processed ${promisesToAwait.length} updates successfully.`
   } catch (error) {
-    throw Error(error);
+    throw Error(error)
   }
-};
+}
 
 exports.validate = functions.https.onRequest(async (req, res) => {
-  const { APIKEY } = req.body;
+  const { APIKEY } = req.body
   if (APIKEY !== process.env.SECRET) {
-    return res.sendStatus(401);
+    return res.sendStatus(401)
   }
   try {
-    const jobData = await getJobData();
-    const validationResults = await getValidationResults(jobData);
-    const processTheResults = await processValidationResults(validationResults);
-    return res.status(200).send(processTheResults);
+    const jobData = await getJobData()
+    const validationResults = await getValidationResults(jobData)
+    const processTheResults = await processValidationResults(validationResults)
+    return res.status(200).send(processTheResults)
   } catch (error) {
-    return res.status(500).send(error);
+    return res.status(500).send(error)
   }
-});
+})
 
 exports.stop = functions.https.onRequest(async (req, res) => {
-  const { runId, jobId, reportedEnd, stdOut, stdErr, APIKEY } = req.body;
+  const { runId, jobId, reportedEnd, stdOut, stdErr, APIKEY } = req.body
   if (APIKEY !== process.env.SECRET) {
-    return res.sendStatus(401);
+    return res.sendStatus(401)
   }
   const failInvalid = msg =>
-    res.status(500).send(`Please provide a valid ${msg}`);
+    res.status(500).send(`Please provide a valid ${msg}`)
 
   if (!runId || !runId.length) {
-    return failInvalid('runId');
+    return failInvalid('runId')
   } else if (!jobId || !jobId.length) {
-    return failInvalid('jobId');
+    return failInvalid('jobId')
   } else if (!reportedEnd) {
-    return failInvalid('reportedEnd');
+    return failInvalid('reportedEnd')
   } else if (stdOut === null) {
-    return failInvalid('stdOut');
+    return failInvalid('stdOut')
   } else if (stdErr === null) {
-    return failInvalid('stdErr');
+    return failInvalid('stdErr')
   }
 
   const runData = {
@@ -393,46 +395,44 @@ exports.stop = functions.https.onRequest(async (req, res) => {
     runId: runId,
     reportedEnd: reportedEnd,
     stdOut: stdOut !== 'False',
-    stdErr: stdErr !== 'False',
-  };
+    stdErr: stdErr !== 'False'
+  }
   // TODO: catch this error clientside and mailgun us or sumthin
   try {
-    const update = await endRun(runData);
-    return res.status(200).send(update);
+    const update = await endRun(runData)
+    return res.status(200).send(update)
   } catch (error) {
-    return res.status(500).send(`Error: ${error.message}`);
+    return res.status(500).send(`Error: ${error.message}`)
   }
-});
+})
 
 exports.go = functions.https.onRequest(async (req, res) => {
-  const { runId, jobId, reportedStart, APIKEY } = req.body;
+  const { runId, jobId, reportedStart, APIKEY } = req.body
   if (APIKEY !== process.env.SECRET) {
-    return res.sendStatus(401);
+    return res.sendStatus(401)
   }
   const failInvalid = msg =>
-    res.status(500).send(`Please provide a valid ${msg}`);
+    res.status(500).send(`Please provide a valid ${msg}`)
 
   if (!runId || !runId.length) {
-    return failInvalid('runId');
+    return failInvalid('runId')
   } else if (!jobId || !jobId.length) {
-    return failInvalid('jobId');
+    return failInvalid('jobId')
   } else if (!reportedStart) {
-    return failInvalid('reportedStart');
+    return failInvalid('reportedStart')
   }
 
   try {
-    const update = await DB.collection(COLLECTIONS.RUNS)
-      .doc(runId)
-      .set({
-        jobId: jobId,
-        start: new Date(),
-        end: null,
-        reportedStart: new Date(reportedStart * 1000),
-        reportedEnd: null,
-        validRun: null,
-      });
-    return res.sendStatus(200);
+    const update = await DB.collection(COLLECTIONS.RUNS).doc(runId).set({
+      jobId: jobId,
+      start: new Date(),
+      end: null,
+      reportedStart: new Date(reportedStart * 1000),
+      reportedEnd: null,
+      validRun: null
+    })
+    return res.sendStatus(200)
   } catch (error) {
-    return res.status(500).send(error);
+    return res.status(500).send(error)
   }
-});
+})

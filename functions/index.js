@@ -1,13 +1,10 @@
 const functions = require('firebase-functions')
 const admin = require('firebase-admin')
-// const url = require('url')
 const moment = require('moment')
 const parser = require('cron-parser')
 
-// Must call before using firebase services
-admin.initializeApp(functions.config().firestore)
-// Database handle
-const DB = admin.firestore()
+admin.initializeApp(functions.config().firestore) // Must call before using firebase services
+const DB = admin.firestore() // Persistent database handle
 
 DB.settings({
   timestampsInSnapshots: true
@@ -34,6 +31,14 @@ const ALERT_TYPES = Object.freeze({
   ERRORS_IN_RUN: 'ERRORS_IN_RUN'
 })
 
+const DEFAULTS = Object.freeze({
+  // Fallbacks if job does not define +/- seconds window for valid runs
+  MAX_SECONDS_EARLY: 59,
+  MAX_SECONDS_LATE: 59,
+  // Process runs that began @ (/validate invocation time - CUTOFF_MINUTES) or earlier
+  CUTOFF_MINUTES: 5
+})
+
 const endRun = async runData => {
   try {
     if (runData.stdErr !== false) {
@@ -50,7 +55,7 @@ const endRun = async runData => {
       }
       const now = new Date()
       const startTime = doc.data().start.toDate()
-      const duration = (now - startTime) / 1000 // Time difference in seconds
+      const duration = (now - startTime) / 1000 // Runtime in seconds
       const validRun = runData.stdErr === true ? false : null
       await t.update(runRef, {
         durationSeconds: duration,
@@ -105,9 +110,8 @@ const updateJob = async (jobId, newDataObj) => {
 
 /* Alerts */
 
-// Firebase trigger on creation of each new alert
-// Used to dispatch messages to users who are subscribed to
-// alerts for the given jobId in the organization.
+// Firebase trigger for each new alert used to dispatch messages to users who are
+// subscribed to alerts for the given jobId in the organization.
 exports.createAlert = functions.firestore
   .document('alerts/{alertId}')
   .onCreate((snap, context) => {
@@ -128,21 +132,6 @@ const createAlert = async (alertType, alertData) => {
   const { jobId, runId, text } = alertData
   const alertId = `alert_${Math.round(Date.now() / 1000)}_${jobId}`
   try {
-<<<<<<< HEAD
-    await DB.collection(COLLECTIONS.ALERTS)
-      .doc(alertId)
-      .set({
-        alertType: alertType,
-        text: text || null,
-        jobId: jobId || null,
-        runId: runId || null,
-        createdAt: new Date(),
-        resolvedAt: null,
-        resolvedByMember: null,
-        subscribedMembersAlerted: false,
-      });
-    return true;
-=======
     await DB.collection(COLLECTIONS.ALERTS).doc(alertId).set({
       alertType: alertType,
       text: text || null,
@@ -153,7 +142,7 @@ const createAlert = async (alertType, alertData) => {
       resolvedByMember: null,
       subscribedMembersAlerted: false
     })
->>>>>>> 85e4c4f... implement maxEarly and maxLate times
+    return true
   } catch (error) {
     throw Error(error)
   }
@@ -203,10 +192,13 @@ const generateTimeSlots = (run, job, stopPoint) => {
   5 mintues ago */
   const jobDocument = job.jobData
   const cronSignature = jobDocument.cronSig
-  const maxSecondsEarly = jobDocument.allowedSecondsEarly || 59
-  const maxSecondsLate = jobDocument.allowedSecondsLate || 59
+  const maxSecondsEarly =
+    jobDocument.allowedSecondsEarly || DEFAULTS.MAX_SECONDS_EARLY
+  const maxSecondsLate =
+    jobDocument.allowedSecondsLate || DEFAULTS.MAX_SECONDS_LATE
   const runStart = moment.unix(run.start._seconds)
-  let iteratorStart = runStart.clone().subtract(59, 'seconds')
+  stopPoint.add(maxSecondsLate, 'seconds')
+  let iteratorStart = runStart.clone().subtract(maxSecondsEarly, 'seconds')
   let iterator = parser.parseExpression(cronSignature, {
     currentDate: iteratorStart.valueOf()
   })
@@ -214,7 +206,6 @@ const generateTimeSlots = (run, job, stopPoint) => {
   let time = iteratorNext()
   let res = []
   while (time < stopPoint) {
-    // TODO: make sure this won't explode
     const earliestTime = time.clone().subtract(maxSecondsEarly, 'seconds')
     const latestTime = time.clone().add(maxSecondsLate, 'seconds')
     res.push({
@@ -235,12 +226,13 @@ const validateTimesForJob = (timeSlots, job, stopPoint) => {
   times to generate alerts for (missing runs) */
   const runList = job.runList
   const jobDocument = job.jobData
-  const maxSecondsAllowedLate = jobDocument.allowedSecondsLate || 59
+  const maxSecondsAllowedLate =
+    jobDocument.allowedSecondsLate || DEFAULTS.MAX_SECONDS_LATE
   const latestTimeToConsider = stopPoint.add(maxSecondsAllowedLate, 'seconds')
   let runsWithValidity = [] // array of {runId: the_run_id, validRun: true/false}
   for (var i = 0; i < runList.length; i++) {
+    const run = runList[i]
     let matchFound = false
-    let run = runList[i]
     let thisRunTime = moment.unix(run.start._seconds)
     if (thisRunTime >= latestTimeToConsider) {
       console.log(`Skipping run at ${thisRunTime}`)
@@ -255,14 +247,14 @@ const validateTimesForJob = (timeSlots, job, stopPoint) => {
         slot.isTaken = true
         matchFound = true
         runsWithValidity.push({
-          run: runList[i],
+          run: run,
           validRun: true
         })
       }
     }
     if (matchFound === false) {
       runsWithValidity.push({
-        run: runList[i],
+        run: run,
         validRun: false
       })
     }
@@ -301,27 +293,32 @@ const getJobData = async () => {
 }
 
 const getValidationResults = jobData => {
-  // Will not consider any jobs past stopPoint on this validation run.
-  const stopPoint = moment().subtract(5, 'minutes')
+  // Will not consider any runs after processAllRunsBeforeTime on this validation run.
+  const processAllRunsBeforeTime = moment().subtract(
+    DEFAULTS.CUTOFF_MINUTES,
+    'minutes'
+  )
   return jobData.filter(jobData => jobData.runList.length > 0).map(job => {
     let firstRun = job.runList[0]
-    let jobTimeSlots = generateTimeSlots(firstRun, job, stopPoint)
+    let jobTimeSlots = generateTimeSlots(
+      firstRun,
+      job,
+      processAllRunsBeforeTime
+    )
     return {
       job: job.jobId,
-      results: validateTimesForJob(jobTimeSlots, job, stopPoint)
+      results: validateTimesForJob(jobTimeSlots, job, processAllRunsBeforeTime),
+      processedAt: processAllRunsBeforeTime
     }
   })
 }
 
 const processValidationResults = async validationResults => {
   // Updates runs and jobs, generates alerts for failures
-  console.log(validationResults)
+  console.log(`processValidationResults: ${JSON.stringify(validationResults)}`)
   let promisesToAwait = []
-  const lastValidatedTime = admin.firestore.Timestamp.fromDate(
-    moment().subtract(5, 'minutes').toDate()
-  )
   validationResults.forEach(jobValidationResult => {
-    const { job, results } = jobValidationResult
+    const { job, results, processedAt } = jobValidationResult
     const { orphanTimeSlots, runsWithValidity } = results
     promisesToAwait.push(
       ...runsWithValidity.map(run =>
@@ -334,7 +331,7 @@ const processValidationResults = async validationResults => {
     if (orphanTimeSlots.length !== 0 || runsWithValidity.length !== 0) {
       promisesToAwait.push(
         updateJob(job, {
-          validatedUntilTimestamp: lastValidatedTime
+          validatedUntilTimestamp: processedAt.toDate()
         })
       )
     }
@@ -397,11 +394,11 @@ exports.stop = functions.https.onRequest(async (req, res) => {
     stdOut: stdOut !== 'False',
     stdErr: stdErr !== 'False'
   }
-  // TODO: catch this error clientside and mailgun us or sumthin
   try {
     const update = await endRun(runData)
     return res.status(200).send(update)
   } catch (error) {
+    console.error(error)
     return res.status(500).send(`Error: ${error.message}`)
   }
 })
@@ -433,6 +430,7 @@ exports.go = functions.https.onRequest(async (req, res) => {
     })
     return res.sendStatus(200)
   } catch (error) {
+    console.error(error)
     return res.status(500).send(error)
   }
 })

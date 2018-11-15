@@ -197,7 +197,7 @@ const generateTimeSlots = (run, job, stopPoint) => {
   const maxSecondsLate =
     jobDocument.allowedSecondsLate || DEFAULTS.MAX_SECONDS_LATE
   const runStart = moment.unix(run.start._seconds)
-  stopPoint.add(maxSecondsLate, 'seconds')
+  stopPoint.clone().add(maxSecondsLate, 'seconds')
   let iteratorStart = runStart.clone().subtract(maxSecondsEarly, 'seconds')
   let iterator = parser.parseExpression(cronSignature, {
     currentDate: iteratorStart.valueOf()
@@ -228,7 +228,7 @@ const validateTimesForJob = (timeSlots, job, stopPoint) => {
   const jobDocument = job.jobData
   const maxSecondsAllowedLate =
     jobDocument.allowedSecondsLate || DEFAULTS.MAX_SECONDS_LATE
-  const latestTimeToConsider = stopPoint.add(maxSecondsAllowedLate, 'seconds')
+  const latestTimeToConsider = stopPoint.clone().add(maxSecondsAllowedLate, 'seconds')
   let runsWithValidity = [] // array of {runId: the_run_id, validRun: true/false}
   for (var i = 0; i < runList.length; i++) {
     const run = runList[i]

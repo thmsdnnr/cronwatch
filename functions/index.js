@@ -13,7 +13,8 @@ DB.settings({
 const COLLECTIONS = Object.freeze({
   JOBS: 'jobs',
   RUNS: 'runs',
-  ALERTS: 'alerts'
+  ALERTS: 'alerts',
+  MONITORS: 'monitors'
 })
 
 const COMPARATOR = Object.freeze({
@@ -70,6 +71,42 @@ const endRun = async runData => {
     return true
   } catch (error) {
     throw Error(error)
+  }
+}
+
+const updateMonitorLastRuntime = async (monitorId = 'monitor_1') => {
+  console.debug(`updateMonitorLastRuntime monitorId: ${monitorId}`)
+  const monitorRef = DB.collection(COLLECTIONS.MONITORS).doc(monitorId)
+  try {
+    await DB.runTransaction(async t => {
+      const ref = await t.get(monitorRef)
+      t.update(monitorRef, {
+        lastRunTimestamp: new Date()
+      })
+    })
+    return 'Success'
+  } catch (error) {
+    throw Error(error)
+  }
+}
+
+const shouldMonitorRun = async (monitorId = 'monitor_1') => {
+  console.debug(`shouldMonitorRun monitorId: ${monitorId}`)
+  const monitorRef = DB.collection(COLLECTIONS.MONITORS).doc(monitorId)
+  const docSnapshot = await monitorRef.get()
+  console.log(docSnapshot)
+  // if (!docSnapshot || docSnapshot.docs.length === 0) {
+  //   throw Error(`Could not find monitor with id: ${monitorId}`)
+  // } // TODO: halp this is a QuerySnapshot?!
+  const monitorData = docSnapshot.docs.map(doc => doc.data())
+  const lastRunTime = monitorData.lastRunTimestamp
+  if (!lastRunTime) {
+    return true
+  } else {
+    return (
+      moment().diff(moment.unix(lastRunTime._seconds), 'seconds') >=
+      DEFAULTS.MIN_SECONDS_BETWEEN_VALIDATIONS
+    )
   }
 }
 
@@ -269,13 +306,6 @@ const validateTimesForJob = (timeSlots, job, M_processRunsBefore) => {
 
 const getJobData = async M_processRunsBefore => {
   const jobList = await getJobsList()
-  // let data = jobDoc.data()
-  // return {
-  //   jobData: data,
-  //   jobId: jobDoc.id,
-  //   cronSig: data.cronSig,
-  //   validatedUntilTimestamp: data.validatedUntilTimestamp || null
-  // }
   const runPromises = jobList.map(async job => {
     const earliestRunTime = job.validatedUntilTimestamp || null
     const filterFn = run =>
@@ -301,7 +331,7 @@ const getJobData = async M_processRunsBefore => {
 
 const getValidationResults = (jobData, M_processRunsBefore) => {
   console.debug(`getValidationResults: ${JSON.stringify(jobData)}`)
-  // Will not consider any runs after processAllRunsBeforeTime on this validation run.
+  // Will not consider any runs after M_processRunsBefore on this validation run.
   return jobData.filter(jobData => jobData.runList.length > 0).map(job => {
     let firstRun = job.runList[0]
     let jobTimeSlots = generateTimeSlots(firstRun, job, M_processRunsBefore)
@@ -358,30 +388,37 @@ const processValidationResults = async (
   }
 }
 
+const checkRuns = async (toPresent = false) => {
+  console.debug(`checkRuns toPresent: ${toPresent}`)
+  try {
+    const shouldRun = await shouldMonitorRun()
+    console.log(`shouldRun: ${shouldRun}`)
+    const M_processRunsBefore = toPresent
+      ? moment()
+      : moment().subtract(DEFAULTS.CUTOFF_MINUTES, 'minutes')
+    const jobData = await getJobData(M_processRunsBefore)
+    const validationResults = await getValidationResults(
+      jobData,
+      M_processRunsBefore
+    )
+    const processTheResults = await processValidationResults(
+      validationResults,
+      M_processRunsBefore
+    )
+    await updateMonitorLastRuntime()
+    return
+  } catch (error) {
+    console.error(error)
+  }
+}
+
 // Firebase trigger for each new alert used to dispatch messages to users who are
 // subscribed to alerts for the given jobId in the organization.
 exports.validate = functions.firestore
   .document('runs/{runId}')
   .onCreate(async (snap, context) => {
     console.debug(`validate onCreate trigger ${new Date()}`)
-    try {
-      const M_processRunsBefore = moment().subtract(
-        DEFAULTS.CUTOFF_MINUTES,
-        'minutes'
-      )
-      const jobData = await getJobData(M_processRunsBefore)
-      const validationResults = await getValidationResults(
-        jobData,
-        M_processRunsBefore
-      )
-      const processTheResults = await processValidationResults(
-        validationResults,
-        M_processRunsBefore
-      )
-      return
-    } catch (error) {
-      console.error(error)
-    }
+    return await checkRuns()
   })
 
 exports.stop = functions.https.onRequest(async (req, res) => {
@@ -414,6 +451,7 @@ exports.stop = functions.https.onRequest(async (req, res) => {
   }
   try {
     const update = await endRun(runData)
+    checkRuns(true)
     return res.status(200).send(update)
   } catch (error) {
     console.error(error)

@@ -1,7 +1,7 @@
-const functions = require('firebase-functions')
-const admin = require('firebase-admin')
 const moment = require('moment')
 const parser = require('cron-parser')
+const admin = require('firebase-admin')
+const functions = require('firebase-functions')
 
 admin.initializeApp(functions.config().firestore) // Must call before using firebase services
 const DB = admin.firestore() // Persistent database handle
@@ -36,7 +36,7 @@ const DEFAULTS = Object.freeze({
   // Fallbacks if job does not define +/- seconds window for valid runs
   MAX_SECONDS_EARLY: 59,
   MAX_SECONDS_LATE: 59,
-  // Process runs that began @ (/validate invocation time - CUTOFF_MINUTES) or earlier
+  // Process runs with start @ (/validate invocation time - CUTOFF_MINUTES) or earlier
   CUTOFF_MINUTES: 1,
   MIN_SECONDS_BETWEEN_VALIDATIONS: 15
 })
@@ -114,7 +114,7 @@ const shouldMonitorRun = async (monitorId = 'monitor_1') => {
 }
 
 const updateRun = async (runId, newDataObj) => {
-  console.log(`updateRun: ${runId} ${newDataObj}`)
+  console.log(`updateRun: ${runId} ${JSON.stringify(newDataObj)}`)
   const runRef = DB.collection(COLLECTIONS.RUNS).doc(runId)
   try {
     await DB.runTransaction(async t => {
@@ -136,7 +136,7 @@ const updateRun = async (runId, newDataObj) => {
 }
 
 const updateJob = async (jobId, newDataObj) => {
-  console.log(`updateJob: ${jobId} ${newDataObj}`)
+  console.log(`updateJob: ${jobId} ${JSON.stringify(newDataObj)}`)
   const jobRef = DB.collection(COLLECTIONS.JOBS).doc(jobId)
   try {
     await DB.runTransaction(async t => {
@@ -203,7 +203,7 @@ const getJobsList = async () => {
 }
 
 const getRunsForJob = async (jobId, earliestTime, filterFn) => {
-  console.log(`Getting runs for ${jobId} later than ${earliestTime}`)
+  console.log(`Getting runs for ${jobId} later than ${earliestTime._seconds}`)
   /* Retrieve all runs for @jobId that occurred after @optionalStartTimestamp
   If no @optionalStartTimestamp is specified, retrieves all runs for job. */
   let runsRef = DB.collection(COLLECTIONS.RUNS).where(
@@ -285,15 +285,15 @@ const validateTimesForJob = (timeSlots, job, M_processRunsBefore) => {
         slot.isTaken = true
         matchFound = true
         runsWithValidity.push({
-          run: run,
-          validRun: true
+          id: run.id,
+          isValid: true
         })
       }
     }
     if (matchFound === false) {
       runsWithValidity.push({
-        run: run,
-        validRun: false
+        id: run.id,
+        isValid: false
       })
     }
   }
@@ -302,8 +302,8 @@ const validateTimesForJob = (timeSlots, job, M_processRunsBefore) => {
     .filter(slot => !slot.isTaken)
     .map(slot => slot.time)
   return {
-    orphanTimeSlots: orphanTimeSlots,
-    runsWithValidity: runsWithValidity
+    orphanTimeSlots,
+    runsWithValidity
   }
 }
 
@@ -321,12 +321,7 @@ const getJobData = async M_processRunsBefore => {
         end: run.end
       }
     })
-    return {
-      jobId: job.id,
-      cronSig: job.cronSig,
-      runList: runList,
-      jobData: job.jobData
-    }
+    return Object.assign(job, { runList })
   })
   const jobData = await Promise.all(runPromises)
   return jobData
@@ -338,11 +333,10 @@ const getValidationResults = (jobData, M_processRunsBefore) => {
   return jobData.filter(jobData => jobData.runList.length > 0).map(job => {
     let firstRun = job.runList[0]
     let jobTimeSlots = generateTimeSlots(firstRun, job, M_processRunsBefore)
-    return {
-      job: job.jobId,
+    return Object.assign(job, {
       results: validateTimesForJob(jobTimeSlots, job, M_processRunsBefore),
       processedAt: M_processRunsBefore.toDate()
-    }
+    })
   })
 }
 
@@ -351,25 +345,23 @@ const processValidationResults = async (
   M_processRunsBefore
 ) => {
   // Updates runs and jobs, generates alerts for failures
-  console.log(
-    `processValidationResults: ${JSON.stringify(validationResults)}`
-  )
+  console.log(`processValidationResults: ${JSON.stringify(validationResults)}`)
   const processBeforeDate = M_processRunsBefore.clone().toDate()
   let promisesToAwait = []
   validationResults.forEach(jobValidationResult => {
-    const { job, results, processedAt } = jobValidationResult
-    const { orphanTimeSlots, runsWithValidity } = results
+    const jobId = jobValidationResult.id
+    const { orphanTimeSlots, runsWithValidity } = jobValidationResult.results
     promisesToAwait.push(
       ...runsWithValidity.map(run =>
-        updateRun(run.run.runId, {
-          validRun: run.validRun
+        updateRun(run.id, {
+          validRun: run.isValid
         })
       )
     )
     /// If we didn't look at any runs for this job, don't update validatedUntilTimestamp
     if (orphanTimeSlots.length !== 0 || runsWithValidity.length !== 0) {
       promisesToAwait.push(
-        updateJob(job, {
+        updateJob(jobId, {
           validatedUntilTimestamp: processBeforeDate
         })
       )
@@ -377,7 +369,7 @@ const processValidationResults = async (
     promisesToAwait.push(
       ...orphanTimeSlots.map(orphan =>
         createAlert(ALERT_TYPES.MISSING_RUN, {
-          jobId: job,
+          jobId: jobId,
           text: orphan.toDate()
         })
       )

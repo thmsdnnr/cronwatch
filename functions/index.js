@@ -93,20 +93,23 @@ const updateMonitorLastRuntime = async (monitorId = 'monitor_1') => {
 const shouldMonitorRun = async (monitorId = 'monitor_1') => {
   console.debug(`shouldMonitorRun monitorId: ${monitorId}`)
   const monitorRef = DB.collection(COLLECTIONS.MONITORS).doc(monitorId)
-  const docSnapshot = await monitorRef.get()
-  console.log(docSnapshot)
-  // if (!docSnapshot || docSnapshot.docs.length === 0) {
-  //   throw Error(`Could not find monitor with id: ${monitorId}`)
-  // } // TODO: halp this is a QuerySnapshot?!
-  const monitorData = docSnapshot.docs.map(doc => doc.data())
+  const doc = await monitorRef.get()
+  let monitorData
+  if (doc && doc.exists) {
+    monitorData = doc.data()
+  } else {
+    return true
+  }
   const lastRunTime = monitorData.lastRunTimestamp
   if (!lastRunTime) {
     return true
   } else {
-    return (
-      moment().diff(moment.unix(lastRunTime._seconds), 'seconds') >=
-      DEFAULTS.MIN_SECONDS_BETWEEN_VALIDATIONS
+    const lastRunSecondsAgo = moment().diff(
+      moment.unix(lastRunTime._seconds),
+      'seconds'
     )
+    console.debug(`lastRunSecondsAgo: ${lastRunSecondsAgo}`)
+    return lastRunSecondsAgo >= DEFAULTS.MIN_SECONDS_BETWEEN_VALIDATIONS
   }
 }
 
@@ -392,7 +395,9 @@ const checkRuns = async (toPresent = false) => {
   console.debug(`checkRuns toPresent: ${toPresent}`)
   try {
     const shouldRun = await shouldMonitorRun()
-    console.log(`shouldRun: ${shouldRun}`)
+    if (!shouldRun) {
+      return
+    }
     const M_processRunsBefore = toPresent
       ? moment()
       : moment().subtract(DEFAULTS.CUTOFF_MINUTES, 'minutes')
@@ -408,7 +413,7 @@ const checkRuns = async (toPresent = false) => {
     await updateMonitorLastRuntime()
     return
   } catch (error) {
-    console.error(error)
+    throw Error(error)
   }
 }
 

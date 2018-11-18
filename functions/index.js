@@ -75,7 +75,7 @@ const endRun = async runData => {
 }
 
 const updateMonitorLastRuntime = async (monitorId = 'monitor_1') => {
-  console.debug(`updateMonitorLastRuntime monitorId: ${monitorId}`)
+  console.log(`updateMonitorLastRuntime monitorId: ${monitorId}`)
   const monitorRef = DB.collection(COLLECTIONS.MONITORS).doc(monitorId)
   try {
     await DB.runTransaction(async t => {
@@ -91,7 +91,7 @@ const updateMonitorLastRuntime = async (monitorId = 'monitor_1') => {
 }
 
 const shouldMonitorRun = async (monitorId = 'monitor_1') => {
-  console.debug(`shouldMonitorRun monitorId: ${monitorId}`)
+  console.log(`shouldMonitorRun monitorId: ${monitorId}`)
   const monitorRef = DB.collection(COLLECTIONS.MONITORS).doc(monitorId)
   const doc = await monitorRef.get()
   let monitorData
@@ -108,13 +108,13 @@ const shouldMonitorRun = async (monitorId = 'monitor_1') => {
       moment.unix(lastRunTime._seconds),
       'seconds'
     )
-    console.debug(`lastRunSecondsAgo: ${lastRunSecondsAgo}`)
+    console.log(`lastRunSecondsAgo: ${lastRunSecondsAgo}`)
     return lastRunSecondsAgo >= DEFAULTS.MIN_SECONDS_BETWEEN_VALIDATIONS
   }
 }
 
 const updateRun = async (runId, newDataObj) => {
-  console.debug(`updateRun: ${runId} ${newDataObj}`)
+  console.log(`updateRun: ${runId} ${newDataObj}`)
   const runRef = DB.collection(COLLECTIONS.RUNS).doc(runId)
   try {
     await DB.runTransaction(async t => {
@@ -136,7 +136,7 @@ const updateRun = async (runId, newDataObj) => {
 }
 
 const updateJob = async (jobId, newDataObj) => {
-  console.debug(`updateJob: ${jobId} ${newDataObj}`)
+  console.log(`updateJob: ${jobId} ${newDataObj}`)
   const jobRef = DB.collection(COLLECTIONS.JOBS).doc(jobId)
   try {
     await DB.runTransaction(async t => {
@@ -156,7 +156,7 @@ const updateJob = async (jobId, newDataObj) => {
 exports.createAlert = functions.firestore
   .document('alerts/{alertId}')
   .onCreate((snap, context) => {
-    console.debug(`Alert onCreate Trigger: ${JSON.stringify(data)}`)
+    console.log(`Alert onCreate Trigger: ${JSON.stringify(data)}`)
     // Can access alert information with snap.data()
     const data = snap.data()
     return snap.ref.update({
@@ -166,7 +166,7 @@ exports.createAlert = functions.firestore
   })
 
 const createAlert = async (alertType, alertData) => {
-  console.debug(`createAlert: ${alertType} ${JSON.stringify(alertData)}`)
+  console.log(`createAlert: ${alertType} ${JSON.stringify(alertData)}`)
   // Generates an alert of @alertType with @alertData
   if (alertType === null) {
     console.error('You should not create an alert without an alertType!')
@@ -203,7 +203,7 @@ const getJobsList = async () => {
 }
 
 const getRunsForJob = async (jobId, earliestTime, filterFn) => {
-  console.debug(`Getting runs for ${jobId} later than ${earliestTime}`)
+  console.log(`Getting runs for ${jobId} later than ${earliestTime}`)
   /* Retrieve all runs for @jobId that occurred after @optionalStartTimestamp
   If no @optionalStartTimestamp is specified, retrieves all runs for job. */
   let runsRef = DB.collection(COLLECTIONS.RUNS).where(
@@ -273,7 +273,7 @@ const validateTimesForJob = (timeSlots, job, M_processRunsBefore) => {
     let matchFound = false
     let thisRunTime = moment.unix(run.start._seconds)
     if (thisRunTime.isAfter(latestTimeToConsider)) {
-      console.debug(`Skipping run at ${thisRunTime}`)
+      console.log(`Skipping run at ${thisRunTime}`)
       continue
     }
     for (var j = 0; j < timeSlots.length; j++) {
@@ -333,7 +333,7 @@ const getJobData = async M_processRunsBefore => {
 }
 
 const getValidationResults = (jobData, M_processRunsBefore) => {
-  console.debug(`getValidationResults: ${JSON.stringify(jobData)}`)
+  console.log(`getValidationResults: ${JSON.stringify(jobData)}`)
   // Will not consider any runs after M_processRunsBefore on this validation run.
   return jobData.filter(jobData => jobData.runList.length > 0).map(job => {
     let firstRun = job.runList[0]
@@ -351,7 +351,7 @@ const processValidationResults = async (
   M_processRunsBefore
 ) => {
   // Updates runs and jobs, generates alerts for failures
-  console.debug(
+  console.log(
     `processValidationResults: ${JSON.stringify(validationResults)}`
   )
   const processBeforeDate = M_processRunsBefore.clone().toDate()
@@ -392,7 +392,7 @@ const processValidationResults = async (
 }
 
 const checkRuns = async (toPresent = false) => {
-  console.debug(`checkRuns toPresent: ${toPresent}`)
+  console.log(`checkRuns toPresent: ${toPresent}`)
   try {
     const shouldRun = await shouldMonitorRun()
     if (!shouldRun) {
@@ -422,13 +422,13 @@ const checkRuns = async (toPresent = false) => {
 exports.validate = functions.firestore
   .document('runs/{runId}')
   .onCreate(async (snap, context) => {
-    console.debug(`validate onCreate trigger ${new Date()}`)
+    console.log(`validate onCreate trigger ${new Date()}`)
     return await checkRuns()
   })
 
 exports.stop = functions.https.onRequest(async (req, res) => {
   const { runId, jobId, reportedEnd, stdOut, stdErr, APIKEY } = req.body
-  console.debug(`stop ${JSON.stringify(req.body)}`)
+  console.log(`stop ${JSON.stringify(req.body)}`)
   if (APIKEY !== process.env.SECRET) {
     return res.sendStatus(401)
   }
@@ -465,7 +465,7 @@ exports.stop = functions.https.onRequest(async (req, res) => {
 })
 
 exports.go = functions.https.onRequest(async (req, res) => {
-  console.debug(`go ${JSON.stringify(req.body)}`)
+  console.log(`go ${JSON.stringify(req.body)}`)
   const { runId, jobId, reportedStart, APIKEY } = req.body
   if (APIKEY !== process.env.SECRET) {
     return res.sendStatus(401)
